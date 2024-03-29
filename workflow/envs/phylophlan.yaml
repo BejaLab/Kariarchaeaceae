@@ -1,0 +1,8 @@
+channels:
+ - conda-forge
+ - bioconda
+dependencies:
+ - phylophlan=3.0.2
+ - raxml=8.2.12
+ - mafft=7.475
+ - trimal=1.4.1

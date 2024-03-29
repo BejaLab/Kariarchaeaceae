@@ -1,0 +1,6 @@
+channels:
+ - conda-forge
+ - bioconda
+dependencies:
+ - biopython=1.83
+ - mafft=7.525

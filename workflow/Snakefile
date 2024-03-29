@@ -1,0 +1,272 @@
+
+from os import listdir, path
+
+genomes ,= glob_wildcards("genomes/{genome}.fna")
+
+rule all:
+    input:
+        expand("analysis/genomes/{genome}_pfam_scan.jsonl", genome = genomes)
+
+rule tiara:
+    input:
+        "genomes/{genome}.fna"
+    output:
+        "analysis/tiara/{genome}.txt"
+    params:
+        m = 1000
+    conda:
+        "envs/tiara.yaml"
+    threads:
+        3
+    shell:
+        "tiara -t {threads} -i {input} -o {output} -m {params.m}"
+
+rule filter_tiara:
+    input:
+        tiara = "analysis/tiara/{genome}.txt",
+        fna = "genomes/{genome}.fna"
+    output:
+        "analysis/genomes/{genome}.fna"
+    params:
+        match = 'archaea'
+    conda:
+        "envs/kits.yaml"
+    shell:
+        "csvgrep -t -c class_fst_stage -r '{params.match}' {input.tiara} | csvcut -c sequence_id | csvformat -TEU3 | seqkit grep -f- -n {input.fna} -o {output}"
+
+rule prodigal:
+    input:
+        "analysis/genomes/{genome}.fna"
+    output:
+        faa = "analysis/genomes/{genome}.faa",
+        cds = "analysis/genomes/{genome}.cds",
+        gff = "analysis/genomes/{genome}.gff"
+    shadow:
+        "minimal"
+    conda:
+        "envs/prodigal.yaml"
+    shell:
+        "prodigal -i {input} -a {output.faa} -d {output.cds} -f gff -o {output.gff}"
+
+rule prodigal_faa_files:
+    input:
+        "analysis/genomes/{genome}.faa"
+    output:
+        "analysis/homologs/input/{genome}.faa"
+    conda:
+        "envs/kits.yaml"
+    shell:
+        "seqkit replace -sp '[*]$' -o {output} {input}"
+
+rule proteinortho:
+    input:
+        expand("analysis/homologs/input/{genome}.faa", genome = genomes)
+    output:
+        "analysis/homologs/proteinortho.proteinortho.tsv"
+    shadow:
+        "minimal"
+    params:
+        evalue = 1e-100,
+        identity = 60
+    threads:
+        30
+    conda:
+        "envs/proteinortho.yaml"
+    shell:
+        "proteinortho -project=proteinortho -cpus={threads} -e={params.evalue} -identity={params.identity} {input} && mv proteinortho.* $(dirname {output})"
+
+rule proteinortho_grab:
+    input:
+        fasta = expand("analysis/homologs/input/{genome}.faa", genome = genomes),
+        tsv = "analysis/homologs/proteinortho.proteinortho.tsv"
+    output:
+        expand("analysis/homologs/output/{genome}.faa", genome = genomes)
+    params:
+        min = 4
+    shadow:
+        "minimal"
+    conda:
+        "envs/proteinortho.yaml"
+    shell:
+        """
+        proteinortho_grab_proteins.pl -minprot={params.min} -core <(awk 'NR>1{{$1=NF-3}}1' OFS='\\t' {input.tsv}) {input.fasta} && \
+            rename s/.core$// *.faa.core && mv *.faa $(dirname {output[0]})
+        """
+
+rule pfam_scan:
+    input:
+        "analysis/genomes/{genome}.faa"
+    output:
+        "analysis/genomes/{genome}_pfam_scan.jsonl"
+    conda:
+        "envs/pfam_scan.yaml"
+    params:
+        pfam = "pfam/hmmer/36.0"
+    threads:
+        2
+    shell:
+        "pfam_scan.pl -fasta {input} -dir {params.pfam} -json -cpu {threads} | jq -c .[] > {output}"
+
+rule phylophlan_input:
+    input:
+        expand("analysis/homologs/output/{genome}.faa", genome = genomes)
+    output:
+        directory("analysis/proteins")
+    shell:
+        "mkdir {output} && cp {input} {output}/"
+
+checkpoint phylophlan:
+    input:
+        work_dir = "analysis/proteins",
+        cfg = "metadata/phylophlan.cfg",
+        maas = "metadata/phylophlan.tsv"
+    output:
+        msa_dir = directory("analysis/proteins_phylophlan/data/trim_not_variant"),
+        tree_dir= directory("analysis/proteins_phylophlan/data/gene_tree1"),
+        trees = "analysis/proteins_phylophlan/proteins.tre"
+    params:
+        min_markers = 50,
+        diversity = "low"
+    conda:
+        "envs/phylophlan.yaml"
+    threads:
+        workflow.cores
+    shell:
+        "phylophlan -i {input.work_dir} -t a -f {input.cfg} --diversity {params.diversity} --subsample full -d phylophlan --data_folder $(dirname {output.msa_dir}) --nproc {threads} --output_folder analysis --verbose --maas {input.maas} --min_num_markers {params.min_markers}"
+
+def get_marker_files(file_name, dir_name = "analysis/proteins_cat_phylogeny/markers"):
+    msa_dir = checkpoints.phylophlan.get().output['msa_dir']
+    files = []
+    for msa_file in listdir(msa_dir):
+        marker, ext = path.splitext(msa_file)
+        if ext == '.aln':
+            file = f"{dir_name}/{marker}/{file_name}"
+            files.append(file)
+    return files
+
+rule copy_msa:
+    input:
+        "analysis/proteins_phylophlan/data/trim_not_variant"
+    output:
+        "analysis/proteins_cat_phylogeny/markers/{marker}/input.fasta"
+    shell:
+        "cp {input}/{wildcards.marker}.aln {output}"
+
+rule copy_tree:
+    input:
+        "analysis/proteins_phylophlan/data/gene_tree1"
+    output:
+        "analysis/proteins_cat_phylogeny/markers/{marker}/input.tree"
+    params:
+        prefix = "RAxML_result."
+    shell:
+        "cp {input}/{params.prefix}{wildcards.marker}.tre {output}"
+
+rule treeshrink:
+    input:
+        msa = lambda w: get_marker_files("input.fasta"),
+        tre = lambda w: get_marker_files("input.tree")
+    output:
+        touch("analysis/proteins_cat_phylogeny/treeshrink.ok")
+    params:
+        dir_name = "analysis/proteins_cat_phylogeny/markers",
+        q = 0.05
+    conda:
+        "envs/treeshrink.yaml"
+    shell:
+        "run_treeshrink.py -i {params.dir_name} -O treeshrink -q {params.q} --force"
+
+rule cat_msas:
+    input:
+        lambda w: get_marker_files("input.fasta"),
+        "analysis/proteins_cat_phylogeny/treeshrink.ok"
+    output:
+        msa = "analysis/proteins_cat_phylogeny/treeshrink.fasta",
+        part = "analysis/proteins_cat_phylogeny/treeshrink.part"
+    params:
+        fasta = lambda w: get_marker_files("treeshrink.fasta")
+    conda:
+        "envs/phyx.yaml"
+    shell:
+        "pxcat -s {params.fasta} -o {output.msa} -p {output.part}"
+
+rule iqtree_cat:
+    input:
+        "analysis/proteins_cat_phylogeny/treeshrink.fasta"
+    output:
+        "analysis/proteins_cat_phylogeny/iqtree2.treefile"
+    params:
+        B = 1000,
+        alrt = 1000,
+        seed = 123,
+        prefix = "analysis/proteins_cat_phylogeny/iqtree2",
+        model = "LG"
+    conda:
+        "envs/iqtree.yaml"
+    threads:
+        20
+    shell:
+        "iqtree2 -s {input} -m {params.model} --prefix {params.prefix} --seed {params.seed} -nt {threads} --alrt {params.alrt} -B {params.B} -redo"
+
+rule makeblast:
+    input:
+        "analysis/genomes/{genome}.faa"
+    output:
+        "analysis/genomes/{genome}.faa.pdb"
+    conda:
+        "envs/blast.yaml"
+    shell:
+        "makeblastdb -in {input} -dbtype prot"
+
+rule blastp:
+    input:
+        query = "metadata/georgia.faa",
+        db = "analysis/genomes/{genome}.faa",
+        pdb = "analysis/genomes/{genome}.faa.pdb"
+    output:
+        "analysis/georgia/blastp/{genome}.txt"
+    conda:
+        "envs/blast.yaml"
+    shell:
+        "blastp -query {input.query} -db {input.db} -outfmt 6 -out {output}"
+
+rule blastp_collect:
+    input:
+        fasta = expand("analysis/genomes/{genome}.faa", genome = genomes),
+        blast = expand("analysis/georgia/blastp/{genome}.txt", genome = genomes),
+        query = "metadata/georgia.faa",
+        msa = "analysis/proteins_cat_phylogeny/treeshrink.fasta"
+    output:
+        ref = "analysis/proteins_cat_phylogeny/apples_ref.fasta",
+        query = "analysis/proteins_cat_phylogeny/apples_query.fasta"
+    params:
+        genomes = genomes,
+        query_genome = "Kari_GA",
+        evalue = 1e-5,
+        min_genes = 3
+    conda:
+        "envs/biopython.yaml"
+    script:
+        "scripts/collect_homologs.py"
+
+rule apples:
+    input:
+        ref = "analysis/proteins_cat_phylogeny/apples_ref.fasta",
+        query = "analysis/proteins_cat_phylogeny/apples_query.fasta",
+        tree = "analysis/proteins_cat_phylogeny/iqtree2.treefile"
+    output:
+        "analysis/proteins_cat_phylogeny/apples.jplace"
+    conda:
+        "envs/apples.yaml"
+    shell:
+        "run_apples.py -p -s {input.ref} -q {input.query} -t {input.tree} -o {output}"
+
+rule gappa:
+    input:
+        "analysis/proteins_cat_phylogeny/apples.jplace"
+    output:
+        "analysis/proteins_cat_phylogeny/apples.newick"
+    conda:
+        "envs/gappa.yaml"
+    shell:
+        "gappa examine graft --jplace-path {input} --out-dir $(dirname {output})"
