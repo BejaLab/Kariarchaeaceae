@@ -1,7 +1,18 @@
 
 from os import listdir, path
+from pandas import read_excel
 
 genomes ,= glob_wildcards("genomes/{genome}.fna")
+rhodopsin_sets ,= glob_wildcards("rhodopsins/{rhodopsin_set}.faa")
+metadata = read_excel("metadata/genomes.xlsx")
+
+species = "Kariarchaeum pelagium"
+
+# Filter rows by matching a regex in one column and exact match in another column
+regex_pattern = 'your_regex_pattern'
+exact_match_string = 'exact_match_string'
+
+species_genomes = metadata[metadata['classification'].str.contains(species) & metadata['redundant?'].isna()]['genome'].tolist()
 
 rule all:
     input:
@@ -190,23 +201,86 @@ rule cat_msas:
     shell:
         "pxcat -s {params.fasta} -o {output.msa} -p {output.part}"
 
-rule iqtree_cat:
+rule completeness:
     input:
-        "analysis/proteins_cat_phylogeny/treeshrink.fasta"
+        "analysis/homologs/proteinortho.proteinortho.tsv"
     output:
-        "analysis/proteins_cat_phylogeny/iqtree2.treefile"
+        "analysis/pangenome/completeness.tsv"
     params:
-        B = 1000,
-        alrt = 1000,
-        seed = 123,
-        prefix = "analysis/proteins_cat_phylogeny/iqtree2",
-        model = "LG"
+        genomes = species_genomes,
+        fraction = 0.25
     conda:
-        "envs/iqtree.yaml"
+        "envs/r.yaml"
+    script:
+        "scripts/completeness.R"
+
+rule break_scaffolds:
+    input:
+        "genomes/{genome}.fna"
+    output:
+        "analysis/pangenome/contigs/{genome}.fna"
+    params:
+        gap = 10
+    conda:
+        "envs/biopython.yaml"
+    script:
+        "scripts/break_scaffolds.py"
+
+rule superpang:
+    input:
+        genomes = expand("analysis/pangenome/contigs/{genome}.fna", genome = species_genomes),
+        completeness = "analysis/pangenome/completeness.tsv"
+    output:
+        directory("analysis/pangenome/superpang")
+    params:
+        ident = 0.8,
+        k = 101
+    conda:
+        "envs/superpang.yaml"
     threads:
         20
     shell:
-        "iqtree2 -s {input} -m {params.model} --prefix {params.prefix} --seed {params.seed} -nt {threads} --alrt {params.alrt} -B {params.B} -redo"
+        "SuperPang.py --fasta {input.genomes} --output-dir {output} -t {threads} -q {input.completeness} -k {params.k} -i {params.ident} -b {params.ident}"
+
+rule raxml:
+    input:
+        "analysis/proteins_cat_phylogeny/treeshrink.fasta"
+    output:
+        "analysis/proteins_cat_phylogeny/RAxML_info.txt",
+        "analysis/proteins_cat_phylogeny/RAxML_bipartitions.txt"
+    params:
+        model = "PROTCATLG",
+        seed = 123,
+        bootstrap = 1000
+    conda:
+        "envs/phylophlan.yaml"
+    threads:
+        20
+    shell:
+        "raxmlHPC-PTHREADS-SSE3 -f a -p {params.seed} -x {params.seed} -# {params.bootstrap} -m {params.model} -T {threads} -s {input} -n txt -w $(dirname $(realpath {output}))"
+
+rule taxit:
+    input:
+        tree = "analysis/proteins_cat_phylogeny/RAxML_bipartitions.txt",
+        info = "analysis/proteins_cat_phylogeny/RAxML_info.txt",
+        aln = "analysis/proteins_cat_phylogeny/treeshrink.fasta"
+    output:
+        directory("analysis/proteins_cat_phylogeny/RAxML.refpkg")
+    conda:
+        "envs/pplacer.yaml"
+    shell:
+        "taxit create -l locus_tag -P {output} --tree-file {input.tree} --aln-fasta {input.aln} --tree-stats {input.info}"
+
+rule pplacer:
+    input:
+        refpkg = "analysis/proteins_cat_phylogeny/RAxML.refpkg",
+        fasta  = "analysis/proteins_cat_phylogeny/pplacer_input.fasta"
+    output:
+        "analysis/proteins_cat_phylogeny/pplacer.jplace"
+    conda:
+        "envs/pplacer.yaml"
+    shell:
+        "pplacer -o {output} -c {input.refpkg} {input.fasta}"
 
 rule makeblast:
     input:
@@ -237,36 +311,73 @@ rule blastp_collect:
         query = "metadata/georgia.faa",
         msa = "analysis/proteins_cat_phylogeny/treeshrink.fasta"
     output:
-        ref = "analysis/proteins_cat_phylogeny/apples_ref.fasta",
-        query = "analysis/proteins_cat_phylogeny/apples_query.fasta"
+        fasta = "analysis/proteins_cat_phylogeny/pplacer_input.fasta",
+        part = "analysis/proteins_cat_phylogeny/pplacer_input.part"
     params:
         genomes = genomes,
-        query_genome = "Kari_GA",
-        evalue = 1e-5,
+        query_genome = "Kari_Gs0128817",
+        evalue = 1e-15,
         min_genes = 3
     conda:
         "envs/biopython.yaml"
     script:
         "scripts/collect_homologs.py"
 
-rule apples:
-    input:
-        ref = "analysis/proteins_cat_phylogeny/apples_ref.fasta",
-        query = "analysis/proteins_cat_phylogeny/apples_query.fasta",
-        tree = "analysis/proteins_cat_phylogeny/iqtree2.treefile"
-    output:
-        "analysis/proteins_cat_phylogeny/apples.jplace"
-    conda:
-        "envs/apples.yaml"
-    shell:
-        "run_apples.py -p -s {input.ref} -q {input.query} -t {input.tree} -o {output}"
-
 rule gappa:
     input:
-        "analysis/proteins_cat_phylogeny/apples.jplace"
+        "analysis/proteins_cat_phylogeny/pplacer.jplace"
     output:
-        "analysis/proteins_cat_phylogeny/apples.newick"
+        "analysis/proteins_cat_phylogeny/pplacer.newick"
     conda:
         "envs/gappa.yaml"
     shell:
         "gappa examine graft --jplace-path {input} --out-dir $(dirname {output})"
+
+rule rhodopsins_cat:
+    input:
+        expand("rhodopsins/{rhodopsin_set}.faa", rhodopsin_set = rhodopsin_sets)
+    output:
+        "analysis/rhodopsins/proteins.faa"
+    conda:
+        "envs/kits.yaml"
+    shell:
+        "seqkit grep -vsrp XXX -o {output} {input}"
+
+rule rhodopsins_mafft:
+    input:
+        "analysis/rhodopsins/proteins.faa"
+    output:
+        "analysis/rhodopsins/mafft.faa"
+    conda:
+        "envs/phylophlan.yaml"
+    shell:
+        "cat {input} | mafft --auto --reorder - > {output}"
+
+rule rhodopsins_trimal:
+    input:
+        "analysis/rhodopsins/mafft.faa"
+    output:
+        "analysis/rhodopsins/trimal.faa"
+    params:
+        gt = 0.9
+    conda:
+        "envs/phylophlan.yaml"
+    shell:
+        "trimal -gt {params.gt} -in {input} -out {output}"
+
+rule rhodopsins_raxml:
+    input:
+        "analysis/rhodopsins/trimal.faa"
+    output:
+        "analysis/rhodopsins/RAxML_info.txt",
+        "analysis/rhodopsins/RAxML_bipartitions.txt"
+    params:
+        model = "PROTGAMMAAUTO",
+        seed = 123,
+        bootstrap = 1000
+    conda:
+        "envs/phylophlan.yaml"
+    threads:
+        20
+    shell:
+        "raxmlHPC-PTHREADS-SSE3 -f a -p {params.seed} -x {params.seed} -# {params.bootstrap} -m {params.model} -T {threads} -s {input} -n txt -w $(dirname $(realpath {output}))"

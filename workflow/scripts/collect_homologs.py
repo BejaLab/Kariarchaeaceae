@@ -5,30 +5,30 @@ from Bio.SeqRecord import SeqRecord
 import os
 import tempfile
 from io import StringIO
-from collections import defaultdict
 
 fasta_files = snakemake.input['fasta']
 blast_files = snakemake.input['blast']
 query_file  = snakemake.input['query']
 msa_file    = snakemake.input['msa']
-output_ref_file = str(snakemake.output['ref'])
-output_query_file = str(snakemake.output['query'])
+output_fasta_file = snakemake.output['fasta']
+output_part_file = snakemake.output['part']
 
 genomes = snakemake.params['genomes']
 evalue_threshold = snakemake.params['evalue']
 min_genes = snakemake.params['min_genes']
 query_genome = snakemake.params['query_genome']
 
-aligned = defaultdict(str)
+aligned = {}
 record = None
 for record in SeqIO.parse(msa_file, 'fasta'):
-    aligned[record.id] += record.seq
-msa_len = len(record.seq)
+    aligned[record.id] = record.seq
+msa_end = len(record.seq)
+aligned[query_genome] = '-' * msa_end
+marker_coords = {}
 
 data = {}
 for record in SeqIO.parse(query_file, 'fasta'):
-    data[record.id] = { record.id: record }
-    aligned[record.id] += '-' * msa_len
+    data[record.id] = { query_genome: record }
 
 for i, genome in enumerate(genomes):
     genes = {}
@@ -44,9 +44,8 @@ for i, genome in enumerate(genomes):
                 marker = markers[record.id]
                 data[marker][genome] = record
 
-query_ids = []
 for marker, marker_data in data.items():
-    if len(marker_data) >= min_genes:
+    if len(marker_data) > min_genes:
         with tempfile.NamedTemporaryFile(mode = "w") as fasta_file:
             missing = list(aligned.keys())
             for genome, record in marker_data.items():
@@ -61,17 +60,13 @@ for marker, marker_data in data.items():
             aln_len = len(record.seq)
             for genome in missing:
                 aligned[genome] += '-' * aln_len
-        query_ids.append(marker)
-    else:
-        del aligned[marker]
+            marker_coords[marker] = msa_end + 1, msa_end + aln_len
+            msa_end += aln_len
 
-with open(output_query_file, 'w') as file:
-    for marker in query_ids:
-        query_seq = aligned.pop(marker)
-        record = SeqRecord(Seq(query_seq), id = f"{query_genome}_{marker}", description = '')
-        SeqIO.write(record, file, 'fasta')
-
-with open(output_ref_file, 'w') as file:
+with open(output_fasta_file, 'w') as file:
     for genome, seq in aligned.items():
         record = SeqRecord(Seq(seq), id = genome, description = '')
         SeqIO.write(record, file, 'fasta')
+with open(output_part_file, 'w') as file:
+    for marker, (start, end) in marker_coords.items():
+        file.write(f"AA, {marker} = {start}-{end}\n")
