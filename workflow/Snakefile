@@ -1,6 +1,7 @@
 
 from os import listdir, path
 from pandas import read_excel
+import yaml
 
 genomes ,= glob_wildcards("genomes/{genome}.fna")
 rhodopsin_sets ,= glob_wildcards("rhodopsins/{rhodopsin_set}.faa")
@@ -13,6 +14,8 @@ regex_pattern = 'your_regex_pattern'
 exact_match_string = 'exact_match_string'
 
 species_genomes = metadata[metadata['classification'].str.contains(species) & metadata['redundant?'].isna()]['genome'].tolist()
+
+configfile: "metadata/config.yaml"
 
 rule all:
     input:
@@ -226,21 +229,34 @@ rule break_scaffolds:
     script:
         "scripts/break_scaffolds.py"
 
+rule copy_genome:
+    input:
+        "genomes/{genome}.fna"
+    output:
+        "analysis/pangenome/genomes/{genome}.fna"
+    shell:
+        "cp {input} {output}"
+
 rule superpang:
     input:
-        genomes = expand("analysis/pangenome/contigs/{genome}.fna", genome = species_genomes),
+        genomes = expand("genomes/{genome}.fna", genome = species_genomes),
         completeness = "analysis/pangenome/completeness.tsv"
     output:
-        directory("analysis/pangenome/superpang")
+        expand("analysis/pangenome/superpang/{file}", file = [ "assembly.fasta", "assembly.info.tsv" ]),
+        expand("analysis/pangenome/superpang/{file}", file = [ "graph.fastg", "graph.NBP2origins.csv" ]),
+        expand("analysis/pangenome/superpang/{file}", file = [ "NBP2origins.tsv", "NBPs.accessory.fasta", "NBPs.core.fasta", "NBPs.fasta" ])
+    log:
+        "analysis/pangenome/superpang.log"
     params:
         ident = 0.8,
-        k = 101
+        k = 101,
+        gap = 10
     conda:
         "envs/superpang.yaml"
     threads:
         20
     shell:
-        "SuperPang.py --fasta {input.genomes} --output-dir {output} -t {threads} -q {input.completeness} -k {params.k} -i {params.ident} -b {params.ident}"
+        "SuperPang.py -f {input.genomes} -o $(dirname {output[0]}) -t {threads} -q {input.completeness} -k {params.k} -i {params.ident} -b {params.ident} --gap-size {params.gap} --force-overwrite &> {log}"
 
 rule raxml:
     input:
@@ -343,6 +359,18 @@ rule rhodopsins_cat:
     shell:
         "seqkit grep -vsrp XXX -o {output} {input}"
 
+rule residues:
+    input:
+        "analysis/rhodopsins/mafft.faa"
+    output:
+        "analysis/rhodopsins/residues.txt"
+    params:
+        residues = config['residues']
+    conda:
+        "envs/biopython.yaml"
+    script:
+        "scripts/residues.py"
+
 rule rhodopsins_mafft:
     input:
         "analysis/rhodopsins/proteins.faa"
@@ -370,7 +398,8 @@ rule rhodopsins_raxml:
         "analysis/rhodopsins/trimal.faa"
     output:
         "analysis/rhodopsins/RAxML_info.txt",
-        "analysis/rhodopsins/RAxML_bipartitions.txt"
+        "analysis/rhodopsins/RAxML_bipartitions.txt",
+        "analysis/rhodopsins/RAxML_bestTree.txt"
     params:
         model = "PROTGAMMAAUTO",
         seed = 123,
@@ -381,3 +410,137 @@ rule rhodopsins_raxml:
         20
     shell:
         "raxmlHPC-PTHREADS-SSE3 -f a -p {params.seed} -x {params.seed} -# {params.bootstrap} -m {params.model} -T {threads} -s {input} -n txt -w $(dirname $(realpath {output}))"
+        # "raxmlHPC-PTHREADS-SSE3 -p {params.seed} -m {params.model} -T {threads} -s {input} -n txt -w $(dirname $(realpath {output}))"
+
+rule rhodopsins_plot:
+    input:
+        newick = "analysis/rhodopsins/RAxML_bipartitions.txt",
+        metadata = "metadata/rhodopsins.xlsx"
+    output:
+        plot = "output/rhodopsins.svg",
+        jtree = "output/rhodopsins.jtree"
+    conda:
+        "envs/r.yaml"
+    script:
+        "scripts/plot_protein_tree.R"
+
+rule superpang_filter:
+    input:
+        info = "analysis/pangenome/superpang/assembly.info.tsv",
+        fasta = "analysis/pangenome/superpang/assembly.fasta"
+    output:
+        "analysis/pangenome/pgap/assembly.fna"
+    params:
+        set = 'core'
+    conda:
+        "envs/kits.yaml"
+    shell:
+        "grep -E core {input.info} | cut -f1 | seqkit grep -f- {input.fasta} -o {output}"
+
+rule copy_submol:
+    input:
+        "metadata/pgap.yaml"
+    output:
+        "analysis/pangenome/pgap/{genome}_submol.yaml"
+    shell:
+        "cp {input} {output}"
+
+rule make_yaml:
+    input:
+        fasta  = "analysis/pangenome/pgap/{genome}.fna",
+        submol = "analysis/pangenome/pgap/{genome}_submol.yaml"
+    output:
+        "analysis/pangenome/pgap/{genome}.yaml"
+    wildcard_constraints:
+        genome = '.*(?<!_submol)'
+    run:
+        sets = dict(
+            fasta  = { "class": "File", "location": path.basename(input.fasta)  },
+            submol = { "class": "File", "location": path.basename(input.submol) }
+        )
+        with open(output[0], 'w') as fd:
+            yaml.dump(sets, fd)
+
+rule pgap:
+    input:
+        yaml = "analysis/pangenome/pgap/{genome}.yaml",
+        submol = "analysis/pangenome/pgap/{genome}_submol.yaml"
+    output:
+        gbk = "analysis/pangenome/pgap/{genome}/annot.gbk"
+    params:
+        dirname = directory("analysis/pangenome/pgap/{genome}/")
+    threads:
+        8
+    shell:
+        """
+        rm -fr {params.dirname}
+        pgap.py --no-internet --no-self-update --debug --ignore-all-errors --report-usage-true --cpu {threads} -o {params.dirname} {input.yaml}
+        """
+
+rule checkm_dload:
+    output:
+        directory("analysis/checkm_database")
+    params:
+        url = "https://data.ace.uq.edu.au/public/CheckM_databases/checkm_data_2015_01_16.tar.gz"
+    shell:
+        "mkdir -p {output} && wget -O- {params.url} | tar xvz -C {output}"
+
+rule checkm_all:
+    input:
+        expand("analysis/checkm/{genome}", genome = species_genomes)
+
+rule checkm_genomes:
+    input:
+        data = "analysis/checkm_database",
+        fasta = "analysis/genomes/{genome}.fna"
+    output:
+        dir = directory("analysis/checkm/{genome}"),
+        txt = "analysis/checkm/{genome}.txt"
+    params:
+        domain = "Archaea"
+    conda:
+        "envs/checkm.yaml"
+    shadow:
+        "minimal"
+    threads:
+        10
+    shell:
+        "CHECKM_DATA_PATH={input.data} checkm taxonomy_wf domain {params.domain} $(dirname {input.fasta}) {output.dir} -f {output.txt} -t {threads}"
+
+rule checkm_pangenome:
+    input:
+        data = "analysis/checkm_database",
+        fasta = "analysis/pangenome/pgap/assembly.fna"
+    output:
+        directory("analysis/pangenome/checkm")
+    params:
+        domain = "Archaea"
+    conda:
+        "envs/checkm.yaml"
+    threads:
+        20
+    shell:
+        "CHECKM_DATA_PATH={input.data} checkm taxonomy_wf domain {params.domain} $(dirname {input.fasta}) {output} -t {threads}"
+
+# not available from conda
+rule splitstree_run:
+    input:
+        fasta = "analysis/rhodopsins/trimal.faa",
+        nexus = "metadata/splitstree.nex"
+    output:
+        "analysis/rhodopsins/splitstree.nex"
+    shell:
+        "xvfb-run -a SplitsTreeCMD -x 'IMPORT FILE={input.fasta} DATATYPE=PROTEIN; EXECUTE FILE={input.nexus}; UPDATE; SAVE FILE={output}; QUIT;'"
+
+rule plot_rhodopsins:
+    input:
+        residues = "analysis/rhodopsins/residues.txt",
+        tree = "analysis/rhodopsins/RAxML_bipartitions.txt",
+        network = "analysis/rhodopsins/splitstree.nex",
+        metadata = "metadata/rhodopsins.xlsx"
+    output:
+        "output/rhodopsins.pdf"
+    conda:
+        "envs/r.yaml"
+    script:
+        "scripts/plot_protein_network.R"

@@ -1,6 +1,15 @@
 channels:
  - conda-forge
  - bioconda
- - fpusan
 dependencies:
- - superpang
+ - python=3.8
+ - numpy
+ - igraph
+ - python-igraph
+ - biopython
+ - graph-tool
+ - minimap2
+ - mappy
+ - pip
+ - pip:
+   - git+https://github.com/alephreish/SuperPang.git

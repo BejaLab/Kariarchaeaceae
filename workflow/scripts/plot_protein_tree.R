@@ -13,12 +13,10 @@ with(snakemake@input, {
     newick_file <<- newick # analysis/rhodopsins/RAxML_bipartitions.txt
     metadata_file <<- metadata # metadata/rhodopsins.xlsx
 })
-# jplace_file <- "analysis/proteins_cat_phylogeny/pplacer.jplace"
-# newick_file <- "analysis/proteins_cat_phylogeny/pplacer.newick"
-# metadata_file <- "metadata/genomes.xlsx"
-# part_ref_file <- "analysis/proteins_cat_phylogeny/treeshrink.part"
-# part_query_file <- "analysis/proteins_cat_phylogeny/pplacer_input.part"
-# aln_file <- "analysis/proteins_cat_phylogeny/pplacer_input.fasta"
+with(snakemake@output, {
+    plot_file <<- plot
+    jtree_file <<- jtree
+})
 
 add_mrca <- function(tree, colname) {
     colname <- deparse(substitute(colname))
@@ -55,18 +53,20 @@ tree <- read.tree(newick_file) %>%
     left_join(metadata, by = "label") %>%
     #mutate(name = ifelse(label == name, label, sprintf("%s (%s)", label, name))) %>%
     add_mrca(clade)
+treedata <- to_treedata(tree)
 wrap_float <- function(x) {
     recode(format(round(x, 2), nsmall = 2), "  NA" = "")
 }
-
 shapes <- list(
     water = "circle",
     sediment = "square"
 )
-p <- ggtree(to_treedata(tree), layout = "rectangular") +
+
+write.jtree(treedata, file = jtree_file)
+p <- ggtree(treedata, layout = "rectangular") +
     scale_color_manual(values = c("black", "red")) +
     new_scale_color() +
-    geom_text2(aes(subset = bootstrap > 1, x = branch, label = bootstrap), color = "black", size = 2, vjust = -0.5) +
+    geom_text2(aes(subset = bootstrap > 50, x = branch, label = bootstrap), color = "black", size = 2, vjust = -0.5) +
 
     #geom_tippoint(aes(subset = !is.na(rhodopsin), color = rhodopsin, x = x + 0.025), shape = "diamond") +
 
@@ -80,7 +80,6 @@ p <- ggtree(to_treedata(tree), layout = "rectangular") +
     #geom_fruit(data = part_query, geom = geom_tile, mapping = aes(y = genome, x = gene, fill = gene), axis.params = c(axis = "x", text = "gene", text.size = 2, text.angle = 90, hjust = 1)) +
     
     geom_tiplab(aes(label = alias), size = 2, offset = 0.075) +
-    geom_cladelab(mapping = aes(subset = !is.na(clade_mrca), node = node, label = clade_mrca), align = T, offset = 0.6) +
     geom_treescale(width = 0.2) +
     theme(legend.position = "bottom")
 

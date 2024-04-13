@@ -14,3 +14,4 @@ dependencies:
  - r-svglite
  - bioconductor-biostrings=2.70.1
  - bioconductor-ggtreeextra=1.12.0
+ - bioconductor-tanggle=1.8.0
