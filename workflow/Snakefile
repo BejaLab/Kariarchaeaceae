@@ -9,44 +9,16 @@ metadata = read_excel("metadata/genomes.xlsx")
 
 species = "Kariarchaeum pelagium"
 
-# Filter rows by matching a regex in one column and exact match in another column
-regex_pattern = 'your_regex_pattern'
-exact_match_string = 'exact_match_string'
-
 species_genomes = metadata[metadata['classification'].str.contains(species) & metadata['redundant?'].isna()]['genome'].tolist()
+
+faa_databases ,= glob_wildcards("databases/faa/{database}.pdb")
+fna_databases ,= glob_wildcards("databases/fna/{database}.ndb")
 
 configfile: "metadata/config.yaml"
 
 rule all:
     input:
         expand("analysis/genomes/{genome}_pfam_scan.jsonl", genome = genomes)
-
-rule tiara:
-    input:
-        "genomes/{genome}.fna"
-    output:
-        "analysis/tiara/{genome}.txt"
-    params:
-        m = 1000
-    conda:
-        "envs/tiara.yaml"
-    threads:
-        3
-    shell:
-        "tiara -t {threads} -i {input} -o {output} -m {params.m}"
-
-rule filter_tiara:
-    input:
-        tiara = "analysis/tiara/{genome}.txt",
-        fna = "genomes/{genome}.fna"
-    output:
-        "analysis/genomes/{genome}.fna"
-    params:
-        match = 'archaea'
-    conda:
-        "envs/kits.yaml"
-    shell:
-        "csvgrep -t -c class_fst_stage -r '{params.match}' {input.tiara} | csvcut -c sequence_id | csvformat -TEU3 | seqkit grep -f- -n {input.fna} -o {output}"
 
 rule prodigal:
     input:
@@ -298,15 +270,25 @@ rule pplacer:
     shell:
         "pplacer -o {output} -c {input.refpkg} {input.fasta}"
 
-rule makeblast:
+rule makeblast_prot:
     input:
-        "analysis/genomes/{genome}.faa"
+        "{prefix}.faa"
     output:
-        "analysis/genomes/{genome}.faa.pdb"
+        "{prefix}.faa.pdb"
     conda:
         "envs/blast.yaml"
     shell:
         "makeblastdb -in {input} -dbtype prot"
+
+rule makeblast_nucl:
+    input:
+        "{prefix}.fna"
+    output:
+        "{prefix}.fna.ndb"
+    conda:
+        "envs/blast.yaml"
+    shell:
+        "makeblastdb -in {input} -dbtype nucl"
 
 rule blastp:
     input:
@@ -414,7 +396,7 @@ rule rhodopsins_raxml:
 
 rule rhodopsins_plot:
     input:
-        newick = "analysis/rhodopsins/RAxML_bipartitions.txt",
+        # newick = "analysis/rhodopsins/RAxML_bipartitions.txt",
         metadata = "metadata/rhodopsins.xlsx"
     output:
         plot = "output/rhodopsins.svg",
@@ -535,12 +517,203 @@ rule splitstree_run:
 rule plot_rhodopsins:
     input:
         residues = "analysis/rhodopsins/residues.txt",
-        tree = "analysis/rhodopsins/RAxML_bipartitions.txt",
+        # tree = "analysis/rhodopsins/RAxML_bipartitions.txt",
         network = "analysis/rhodopsins/splitstree.nex",
         metadata = "metadata/rhodopsins.xlsx"
     output:
-        "output/rhodopsins.pdf"
+        "output/rhodopsin_network.svg"
     conda:
         "envs/r.yaml"
     script:
         "scripts/plot_protein_network.R"
+
+rule cluster_rhodopsins:
+    input:
+        "analysis/rhodopsins/proteins.faa"
+    output:
+        "analysis/rhodopsins/proteins.cdhit"
+    params:
+        c = 0.9
+    conda:
+        "envs/cd-hit.yaml"
+    shell:
+        "cd-hit -c {params.c} -d 0 -i {input} -o {output}"
+
+rule tblastn_fna:
+    input:
+        query = "analysis/rhodopsins/proteins.cdhit",
+        ndb = "databases/fna/{database}.ndb"
+    output:
+        "analysis/tblastn/{database}.txt"
+    params:
+        db = "databases/fna/{database}",
+        evalue = 1e-5
+    conda:
+        "envs/blast.yaml"
+    threads:
+        40
+    shell:
+        "tblastn -query {input.query} -db {params.db} -outfmt 6 -out {output} -max_target_seqs 1000000000 -num_threads {threads} -evalue {params.evalue}"
+
+rule blastp_faa:
+    input:
+        query = "rhodopsins/{family}.faa",
+        pdb = "databases/faa/{database}.pdb"
+    output:
+        "analysis/blastp/{database}-{family}.txt"
+    params:
+        db = "databases/faa/{database}",
+        evalue = 1e-10,
+        cols = [ 'qseqid', 'sseqid', 'pident', 'length', 'qlen', 'slen', 'qseq', 'sseq', 'qstart', 'qend', 'sstart', 'send', 'evalue', 'bitscore', 'stitle' ]
+    conda:
+        "envs/blast.yaml"
+    threads:
+        20
+    shell:
+        "blastp -query {input.query} -db {params.db} -outfmt '6 {params.cols}' -out {output} -max_target_seqs 1000000000 -num_threads {threads} -evalue {params.evalue}"
+
+rule blastp_filter_hits:
+    input:
+        outfmt6 = expand("analysis/blastp/{{database}}-{family}.txt", family = rhodopsin_sets),
+        metadata = "metadata/rhodopsins.xlsx"
+    output:
+        "analysis/blastp/{database}_clades.csv"
+    params:
+        cols = [ 'qseqid', 'sseqid', 'pident', 'length', 'qlen', 'slen', 'qseq', 'sseq', 'qstart', 'qend', 'sstart', 'send', 'evalue', 'bitscore', 'stitle' ],
+        id = 30,
+        score = 90,
+        clades = [ 'HeimdallR', 'ACA', 'ACB' ]
+    conda:
+        "envs/pandas.yaml"
+    script:
+        "scripts/extract_hits.py"
+
+rule dload_map:
+    output:
+        "analysis/maps/land/ne_110m_land.shp"
+    params:
+        url = "https://www.naturalearthdata.com/http//www.naturalearthdata.com/download/110m/physical/ne_110m_land.zip"
+    shadow:
+        "minimal"
+    shell:
+        "wget -O tmp.zip '{params.url}' && unzip tmp.zip -d $(dirname {output})"
+
+rule om_rgc_profiles:
+    input:
+        clades = "analysis/blastp/OM-RGC_v2_orfs.faa_clades.csv",
+        gtdb = "analysis/blastp/OM-RGC_v2_orfs.faa_gtdb.csv",
+        profile_metaG = "databases/faa/OM-RGC_v2_gene_profile_metaG.tsv",
+        profile_metaT = "databases/faa/OM-RGC_v2_gene_profile_metaT.tsv",
+        metadata = "databases/faa/Salazar_et_al_2019_Suppl_Info.xlsx"
+    output:
+        profiles = "analysis/profiles/OM-RGC_v2_orfs_profiles.csv",
+        matches = "analysis/profiles/OM-RGC_v2_orfs_matches.csv",
+        samples = "analysis/profiles/OM-RGC_v2_orfs_samples.csv"
+    params:
+        # some genuine ingroups in 'clades' might not score high in 'gtdb' (HeimdallR3)
+        pident_not_in_gtdb = 95
+    conda:
+        "envs/pandas.yaml"
+    script:
+        "scripts/om_rgc_profiles.py"
+
+rule jgi_img_profiles:
+    input:
+        clades = "analysis/blastp/JGI_IMG_unrestricted.faa_clades.csv",
+        gtdb = "analysis/blastp/JGI_IMG_unrestricted.faa_gtdb.csv",
+        profile = "databases/faa/JGI_IMG_unrestricted.gene_info.txt"
+    output:
+        profiles = "analysis/profiles/JGI_IMG_unrestricted_profiles.csv",
+        matches = "analysis/profiles/JGI_IMG_unrestricted_matches.csv",
+        samples = "analysis/profiles/JGI_IMG_unrestricted_samples.csv"
+    params:
+        # some genuine ingroups in 'clades' might not score high in 'gtdb' (HeimdallR3)
+        pident_not_in_gtdb = 95
+    conda:
+        "envs/pandas.yaml"
+    script:
+        "scripts/jgi_img_profiles.py"
+
+rule plot_map:
+    input:
+        genomes = "metadata/genomes.xlsx",
+        shape = "analysis/maps/land/ne_110m_land.shp",
+        jgi_img_profiles = "analysis/profiles/JGI_IMG_unrestricted_profiles.csv",
+        jgi_img_matches = "analysis/profiles/JGI_IMG_unrestricted_matches.csv",
+        jgi_img_samples = "analysis/profiles/JGI_IMG_unrestricted_samples.csv",
+        om_rgc_profiles = "analysis/profiles/OM-RGC_v2_orfs_profiles.csv",
+        om_rgc_matches = "analysis/profiles/OM-RGC_v2_orfs_matches.csv",
+        om_rgc_samples = "analysis/profiles/OM-RGC_v2_orfs_samples.csv"
+    output:
+        "output/map.pdf"
+    conda:
+        "envs/r-map.yaml"
+    script:
+        "scripts/plot_map.R"
+
+rule tblastn_filter_hits:
+    input:
+        outfmt6 = "analysis/tblastn/{database}.txt",
+        metadata = "metadata/rhodopsins.xlsx"
+    output:
+        "analysis/tblastn/{database}.csv"
+    params:
+        id = 40,
+        length = 180,
+        evalue = 1e-10
+    conda:
+        "envs/pandas.yaml"
+    script:
+        "scripts/extract_hits.py"
+
+rule blastp_fasta:
+    input:
+        "analysis/blastp/{database}_clades.csv"
+    output:
+        "analysis/blastp/{database}.fasta"
+    conda:
+        "envs/kits.yaml"
+    shell:
+        "csvcut -c sseqid,sseq {input} | csvformat -T | sed 1d | seqkit tab2fx | seqkit seq -g -o {output}"
+
+rule tblastn_gtdb:
+    input:
+        query = "analysis/blastp/{database}.fasta",
+        ndb = "analysis/gtdb/rhodopsins-coding.fna.ndb",
+        db = "analysis/gtdb/rhodopsins-coding.fna"
+    output:
+        "analysis/blastp/{database}_gtdb.txt"
+    params:
+        cols = [ 'qseqid', 'sseqid', 'pident', 'length', 'qlen', 'slen', 'qstart', 'qend', 'sstart', 'send', 'evalue', 'bitscore', 'stitle' ],
+        max_seq = 20
+    conda:
+        "envs/blast.yaml"
+    threads:
+        10
+    shell:
+        "tblastn -query {input.query} -db {input.db} -out {output} -outfmt '6 {params.cols}' -num_threads {threads} -max_target_seqs {params.max_seq}"
+
+rule gtdb_hits:
+    input:
+        "analysis/blastp/{database}_gtdb.txt"
+    output:
+        "analysis/blastp/{database}_gtdb.csv"
+    params:
+        evalue = 1e-20,
+        pident = 66.7,
+        top_hits = 5,
+        ingroup_ratio = 0.51,
+        ingroup = 'd__Archaea',
+        cols = [ 'qseqid', 'sseqid', 'pident', 'length', 'qlen', 'slen', 'qstart', 'qend', 'sstart', 'send', 'evalue', 'bitscore', 'stitle' ]
+    conda:
+        "envs/pandas.yaml"
+    script:
+        "scripts/extract_gtdb_hits.py"
+
+rule copy_gtdb_rhodopsins:
+    input:
+        "databases/gtdb/rhodopsins-coding.fna"
+    output:
+        "analysis/gtdb/rhodopsins-coding.fna"
+    shell:
+        "cp {input} {output}"
