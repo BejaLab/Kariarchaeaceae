@@ -1,20 +1,13 @@
-
-from csv import DictReader
 import pandas as pd
 
 clades_file = snakemake.input['clades']
-gtdb_file = snakemake.input['gtdb']
 profile_file = snakemake.input['profile']
 
 profiles_out_file = snakemake.output['profiles']
 samples_out_file = snakemake.output['samples']
 matches_out_file = snakemake.output['matches']
 
-pident_not_in_gtdb = snakemake.params['pident_not_in_gtdb']
-
-gtdb_df = pd.read_csv(gtdb_file)
-ingroup_ids = list(gtdb_df['qseqid'])
-clades_df = pd.read_csv(clades_file).query('sseqid in @ingroup_ids or pident >= @pident_not_in_gtdb')
+clades_df = pd.read_csv(clades_file)
 clades_df['stitle'] = (clades_df['sseqid'] + ' ' + clades_df['stitle']).str.split(' // ')
 clades_df = clades_df.explode('stitle')
 clades_df['gene'] = clades_df['stitle'].str.extract(r'^(\S+)')

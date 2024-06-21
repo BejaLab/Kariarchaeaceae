@@ -4,3 +4,6 @@ channels:
 dependencies:
  - biopython=1.83
  - mafft=7.525
+ - pandas=2.2.2
+ - openpyxl=3.1.2
+ - numpy=1.26.4

@@ -1,9 +1,7 @@
-from csv import DictReader
 import pandas as pd
 import warnings
 
 clades_file = snakemake.input['clades']
-gtdb_file = snakemake.input['gtdb']
 profile_metaG_file = snakemake.input['profile_metaG']
 profile_metaT_file = snakemake.input['profile_metaT']
 metadata_file = snakemake.input['metadata']
@@ -12,11 +10,7 @@ profiles_out_file = snakemake.output['profiles']
 samples_out_file = snakemake.output['samples']
 matches_out_file = snakemake.output['matches']
 
-pident_not_in_gtdb = snakemake.params['pident_not_in_gtdb']
-
-gtdb_df = pd.read_csv(gtdb_file)
-ingroup_ids = list(gtdb_df['qseqid'])
-clades_df = pd.read_csv(clades_file).query('sseqid in @ingroup_ids or pident >= @pident_not_in_gtdb')
+clades_df = pd.read_csv(clades_file)
 clades_df['om_rgc'] = clades_df['stitle'].str.extract(r'(OM-RGC\S+)', expand = True)
 matches = clades_df.query('~om_rgc.isnull()', engine='python').set_index('om_rgc')
 records = matches.T.to_dict()

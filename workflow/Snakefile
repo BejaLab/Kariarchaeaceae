@@ -3,22 +3,31 @@ from os import listdir, path
 from pandas import read_excel
 import yaml
 
-genomes ,= glob_wildcards("genomes/{genome}.fna")
 rhodopsin_sets ,= glob_wildcards("rhodopsins/{rhodopsin_set}.faa")
 metadata = read_excel("metadata/genomes.xlsx")
 
 species = "Kariarchaeum pelagium"
 
-species_genomes = metadata[metadata['classification'].str.contains(species) & metadata['redundant?'].isna()]['genome'].tolist()
-
-faa_databases ,= glob_wildcards("databases/faa/{database}.pdb")
-fna_databases ,= glob_wildcards("databases/fna/{database}.ndb")
+non_red = metadata[metadata['redundant?'].isna()]
+species_genomes = non_red[non_red['classification'].str.contains(species)]['genome'].tolist()
+non_species_genomes = non_red[~non_red['classification'].str.contains(species)]['genome'].tolist()
+all_genomes = species_genomes + non_species_genomes
 
 configfile: "metadata/config.yaml"
 
 rule all:
     input:
-        expand("analysis/genomes/{genome}_pfam_scan.jsonl", genome = genomes)
+        # expand("analysis/genomes/{genome}_pfam_scan.jsonl", genome = genomes),
+        expand("analysis/recomb/openrdp-amino-acid/{method}.txt", method = [ 'geneconv', 'bootscan', 'maxchi', 'siscan', 'chimaera', 'threeseq', 'rdp' ]),
+        "analysis/recomb/gard-faa/GARD.json"
+
+rule copy_genome:
+    input:
+        "genomes/{genome}.fna"
+    output:
+        "analysis/genomes/{genome}.fna"
+    shell:
+        "cp {input} {output}"
 
 rule prodigal:
     input:
@@ -27,12 +36,14 @@ rule prodigal:
         faa = "analysis/genomes/{genome}.faa",
         cds = "analysis/genomes/{genome}.cds",
         gff = "analysis/genomes/{genome}.gff"
+    params:
+        proc = lambda w: 'single' if w.genome in species_genomes else 'meta'
     shadow:
         "minimal"
     conda:
         "envs/prodigal.yaml"
     shell:
-        "prodigal -i {input} -a {output.faa} -d {output.cds} -f gff -o {output.gff}"
+        "prodigal -i {input} -a {output.faa} -d {output.cds} -f gff -o {output.gff} -p {params.proc}"
 
 rule prodigal_faa_files:
     input:
@@ -46,7 +57,7 @@ rule prodigal_faa_files:
 
 rule proteinortho:
     input:
-        expand("analysis/homologs/input/{genome}.faa", genome = genomes)
+        expand("analysis/homologs/input/{genome}.faa", genome = species_genomes)
     output:
         "analysis/homologs/proteinortho.proteinortho.tsv"
     shadow:
@@ -63,10 +74,10 @@ rule proteinortho:
 
 rule proteinortho_grab:
     input:
-        fasta = expand("analysis/homologs/input/{genome}.faa", genome = genomes),
+        fasta = expand("analysis/homologs/input/{genome}.faa", genome = species_genomes),
         tsv = "analysis/homologs/proteinortho.proteinortho.tsv"
     output:
-        expand("analysis/homologs/output/{genome}.faa", genome = genomes)
+        expand("analysis/homologs/output/{genome}.faa", genome = species_genomes)
     params:
         min = 4
     shadow:
@@ -95,7 +106,7 @@ rule pfam_scan:
 
 rule phylophlan_input:
     input:
-        expand("analysis/homologs/output/{genome}.faa", genome = genomes)
+        expand("analysis/homologs/output/{genome}.faa", genome = species_genomes)
     output:
         directory("analysis/proteins")
     shell:
@@ -201,7 +212,7 @@ rule break_scaffolds:
     script:
         "scripts/break_scaffolds.py"
 
-rule copy_genome:
+rule copy_genome_for_pangenome:
     input:
         "genomes/{genome}.fna"
     output:
@@ -304,15 +315,15 @@ rule blastp:
 
 rule blastp_collect:
     input:
-        fasta = expand("analysis/genomes/{genome}.faa", genome = genomes),
-        blast = expand("analysis/georgia/blastp/{genome}.txt", genome = genomes),
+        fasta = expand("analysis/genomes/{genome}.faa", genome = species_genomes),
+        blast = expand("analysis/georgia/blastp/{genome}.txt", genome = species_genomes),
         query = "metadata/georgia.faa",
         msa = "analysis/proteins_cat_phylogeny/treeshrink.fasta"
     output:
         fasta = "analysis/proteins_cat_phylogeny/pplacer_input.fasta",
         part = "analysis/proteins_cat_phylogeny/pplacer_input.part"
     params:
-        genomes = genomes,
+        genomes = species_genomes,
         query_genome = "Kari_Gs0128817",
         evalue = 1e-15,
         min_genes = 3
@@ -555,7 +566,7 @@ rule tblastn_fna:
     shell:
         "tblastn -query {input.query} -db {params.db} -outfmt 6 -out {output} -max_target_seqs 1000000000 -num_threads {threads} -evalue {params.evalue}"
 
-rule blastp_faa:
+rule blastp_database:
     input:
         query = "rhodopsins/{family}.faa",
         pdb = "databases/faa/{database}.pdb"
@@ -572,21 +583,220 @@ rule blastp_faa:
     shell:
         "blastp -query {input.query} -db {params.db} -outfmt '6 {params.cols}' -out {output} -max_target_seqs 1000000000 -num_threads {threads} -evalue {params.evalue}"
 
-rule blastp_filter_hits:
+rule blastp_gtdb:
+    input:
+        query = "rhodopsins/{family}.faa",
+        pdb = "analysis/rhodopsin_cds/GTDB/coding.faa.pdb"
+    output:
+        "analysis/blastp/GTDB-{family}.txt"
+    params:
+        db = "analysis/rhodopsin_cds/GTDB/coding.faa",
+        evalue = 1e-10,
+        cols = [ 'qseqid', 'sseqid', 'pident', 'length', 'qlen', 'slen', 'qseq', 'sseq', 'qstart', 'qend', 'sstart', 'send', 'evalue', 'bitscore', 'stitle' ]
+    conda:
+        "envs/blast.yaml"
+    threads:
+        20
+    shell:
+        "blastp -query {input.query} -db {params.db} -outfmt '6 {params.cols}' -out {output} -max_target_seqs 1000000000 -num_threads {threads} -evalue {params.evalue}"
+
+rule cat_genomes:
+    input:
+        expand("analysis/genomes/{genome}.faa", genome = all_genomes)
+    output:
+        "analysis/genomes/all_genomes.faa"
+    shell:
+        "cat {input} > {output}"
+
+rule blastp_genomes:
+    input:
+        query = "rhodopsins/{family}.faa",
+        pdb = "analysis/genomes/all_genomes.faa.pdb"
+    output:
+        "analysis/blastp/all_genomes-{family}.txt"
+    params:
+        db = "analysis/genomes/all_genomes.faa",
+        evalue = 1e-10,
+        cols = [ 'qseqid', 'sseqid', 'pident', 'length', 'qlen', 'slen', 'qseq', 'sseq', 'qstart', 'qend', 'sstart', 'send', 'evalue', 'bitscore', 'stitle' ]
+    conda:
+        "envs/blast.yaml"
+    threads:
+        20
+    shell:
+        "blastp -query {input.query} -db {params.db} -outfmt '6 {params.cols}' -out {output} -max_target_seqs 1000000000 -num_threads {threads} -evalue {params.evalue}"
+
+rule blastp_faa:
+    input:
+        "analysis/blastp/{database}_merged.csv"
+    output:
+        "analysis/blastp/{database}_merged.faa"
+    conda:
+        "envs/kits.yaml"
+    shell:
+        "csvcut -c sseqid,stitle,sseq {input} | csvformat -T | sed 1d | sed 's/\\t/ /' | seqkit tab2fx | seqkit seq -g -o {output}"
+
+rule easy_taxonomy:
+    input:
+        db_tax = "analysis/rhodopsin_cds/GTDB/coding_taxonomy",
+        db = "analysis/rhodopsin_cds/GTDB/coding",
+        query = "analysis/blastp/{database}_merged.faa"
+    output:
+        "analysis/blastp/{database}_merged_lca.tsv"
+    params:
+        lca_mode = 4,
+        prefix = "analysis/blastp/{database}_merged"
+    conda:
+        "envs/kits.yaml"
+    threads:
+        32
+    shell:
+        "mmseqs easy-taxonomy {input.query} {input.db} {params.prefix} tmp --lca-mode {params.lca_mode} --tax-lineage 1 --threads {threads}"
+
+rule all_clades_csv:
+    input:
+        expand("analysis/blastp/{database}_clades.csv", database = [ 'JGI_IMG_unrestricted.faa', 'OM-RGC_v2_orfs.faa', 'all_genomes', 'GTDB' ])
+
+rule subclades_poseidoniia:
+    input:
+        expand("analysis/blastp/{database}-{{clade}}.faa", database = [ 'JGI_IMG_unrestricted.faa', 'OM-RGC_v2_orfs.faa', 'GTDB' ])
+    output:
+        "analysis/subclades/poseidoniia-{clade}/sequences.fasta"
+    params:
+        m = 210
+    conda:
+        "envs/kits.yaml"
+    shell:
+        "seqkit seq -m {params.m} -o {output} {input}"
+
+rule subclades_heidallR:
+    input:
+        expand("analysis/blastp/{database}-{clade}.faa", database = [ 'all_genomes', 'JGI_IMG_unrestricted.faa', 'OM-RGC_v2_orfs.faa' ], clade = [ 'HeimdallR' ])
+    output:
+        "analysis/subclades/kariarchaeum-heimdallR/sequences.fasta"
+    params:
+        m = 210
+    conda:
+        "envs/kits.yaml"
+    shell:
+        "seqkit seq -m {params.m} {input} | seqkit rmdup -s -o {output}"
+
+rule subclades_poseidoniia_cdhit:
+    input:
+        "analysis/subclades/poseidoniia-{clade}/sequences.fasta"
+    output:
+        "analysis/subclades/poseidoniia-{clade}/cdhit.fasta"
+    params:
+        c = 0.9
+    conda:
+        "envs/cd-hit.yaml"
+    shell:
+        "cd-hit -i {input} -o {output} -c {params.c} -d 0"
+
+rule subclades_kariarchaeum_cdhit:
+    input:
+        "analysis/subclades/kariarchaeum-heimdallR/sequences.fasta"
+    output:
+        "analysis/subclades/kariarchaeum-heimdallR/cdhit.fasta"
+    params:
+        c = 1.0
+    conda:
+        "envs/cd-hit.yaml"
+    shell:
+        "cd-hit -i {input} -o {output} -c {params.c} -d 0"
+
+rule subclades_mafft:
+    input:
+        "analysis/subclades/{taxon}-{clade}/cdhit.fasta",
+        "rhodopsins/references.faa"
+    output:
+        "analysis/subclades/{taxon}-{clade}/mafft.fasta"
+    conda:
+        "envs/phylophlan.yaml"
+    shell:
+        "cat {input} | mafft --reorder --auto - > {output}"
+
+rule subclades_trimal:
+    input:
+        "analysis/subclades/{taxon}-{clade}/mafft.fasta"
+    output:
+        "analysis/subclades/{taxon}-{clade}/trimal.fasta"
+    params:
+        gt = 0.1
+    conda:
+        "envs/phylophlan.yaml"
+    shell:
+        "trimal -in {input} -out {output} -gt {params.gt} -keepheader"
+
+rule subclades_trimal_long:
+    input:
+        "analysis/subclades/{taxon}-{clade}/trimal.fasta"
+    output:
+        "analysis/subclades/{taxon}-{clade}/trimal.long.fasta"
+    params:
+        m = 210
+    conda:
+        "envs/kits.yaml"
+    shell:
+        "seqkit seq -nigm {params.m} {input} | seqkit grep -o {output} -f- {input}"
+
+rule subclades_raxml:
+    input:
+        "analysis/subclades/{taxon}-{clade}/trimal.long.fasta"
+    output:
+        "analysis/subclades/{taxon}-{clade}/RAxML_info.txt",
+        "analysis/subclades/{taxon}-{clade}/RAxML_bipartitions.txt"
+    params:
+        model = "PROTCATLG",
+        seed = 123,
+        bootstrap = 1000
+    conda:
+        "envs/phylophlan.yaml"
+    threads:
+        20
+    shell:
+        "raxmlHPC-PTHREADS-SSE3 -f a -p {params.seed} -x {params.seed} -# {params.bootstrap} -m {params.model} -T {threads} -s {input} -n txt -w $(dirname $(realpath {output}))"
+
+rule blastp_merge_hits:
     input:
         outfmt6 = expand("analysis/blastp/{{database}}-{family}.txt", family = rhodopsin_sets),
         metadata = "metadata/rhodopsins.xlsx"
     output:
-        "analysis/blastp/{database}_clades.csv"
+        "analysis/blastp/{database}_merged.csv"
     params:
         cols = [ 'qseqid', 'sseqid', 'pident', 'length', 'qlen', 'slen', 'qseq', 'sseq', 'qstart', 'qend', 'sstart', 'send', 'evalue', 'bitscore', 'stitle' ],
-        id = 30,
+        id = 50,
         score = 90,
         clades = [ 'HeimdallR', 'ACA', 'ACB' ]
     conda:
         "envs/pandas.yaml"
     script:
         "scripts/extract_hits.py"
+
+rule blastp_filter_taxa:
+    input:
+        csv = "analysis/blastp/{database}_merged.csv",
+        lca = "analysis/blastp/{database}_merged_lca.tsv"
+    output:
+        "analysis/blastp/{database}_clades.csv"
+    params:
+        taxon = "d_Archaea"
+    conda:
+        "envs/kits.yaml"
+    shell:
+        "grep {params.taxon} {input.lca} | cut -f1 | csvgrep -c sseqid -f- {input.csv} > {output}"
+
+rule blastp_clade_faa:
+    input:
+        "analysis/blastp/{database}_clades.csv"
+    output:
+        "analysis/blastp/{database}-{family}.faa"
+    params:
+        clade = lambda w: { 'HeimdallR': 'HeimdallR', 'ACB': 'ACB', 'ACA': 'PR' }[w.family],
+        subclade = lambda w: { 'HeimdallR': '', 'ACB': '', 'ACA': 'ACA' }[w.family]
+    conda:
+        "envs/kits.yaml"
+    shell:
+        "csvgrep -c clade -m '{params.clade}' {input} | csvgrep -c subclade -m '{params.subclade}' | csvcut -c sseqid,stitle,sseq | csvformat -T | sed 1d | sed 's/\\t/ /' | seqkit tab2fx | seqkit seq -g -o {output}"
 
 rule dload_map:
     output:
@@ -601,7 +811,6 @@ rule dload_map:
 rule om_rgc_profiles:
     input:
         clades = "analysis/blastp/OM-RGC_v2_orfs.faa_clades.csv",
-        gtdb = "analysis/blastp/OM-RGC_v2_orfs.faa_gtdb.csv",
         profile_metaG = "databases/faa/OM-RGC_v2_gene_profile_metaG.tsv",
         profile_metaT = "databases/faa/OM-RGC_v2_gene_profile_metaT.tsv",
         metadata = "databases/faa/Salazar_et_al_2019_Suppl_Info.xlsx"
@@ -609,9 +818,6 @@ rule om_rgc_profiles:
         profiles = "analysis/profiles/OM-RGC_v2_orfs_profiles.csv",
         matches = "analysis/profiles/OM-RGC_v2_orfs_matches.csv",
         samples = "analysis/profiles/OM-RGC_v2_orfs_samples.csv"
-    params:
-        # some genuine ingroups in 'clades' might not score high in 'gtdb' (HeimdallR3)
-        pident_not_in_gtdb = 95
     conda:
         "envs/pandas.yaml"
     script:
@@ -620,15 +826,11 @@ rule om_rgc_profiles:
 rule jgi_img_profiles:
     input:
         clades = "analysis/blastp/JGI_IMG_unrestricted.faa_clades.csv",
-        gtdb = "analysis/blastp/JGI_IMG_unrestricted.faa_gtdb.csv",
         profile = "databases/faa/JGI_IMG_unrestricted.gene_info.txt"
     output:
         profiles = "analysis/profiles/JGI_IMG_unrestricted_profiles.csv",
         matches = "analysis/profiles/JGI_IMG_unrestricted_matches.csv",
         samples = "analysis/profiles/JGI_IMG_unrestricted_samples.csv"
-    params:
-        # some genuine ingroups in 'clades' might not score high in 'gtdb' (HeimdallR3)
-        pident_not_in_gtdb = 95
     conda:
         "envs/pandas.yaml"
     script:
@@ -666,54 +868,294 @@ rule tblastn_filter_hits:
     script:
         "scripts/extract_hits.py"
 
-rule blastp_fasta:
+rule ref_genomes_cat:
     input:
-        "analysis/blastp/{database}_clades.csv"
+        expand("genomes/{genome}.fna", genome = species_genomes),
+        "metadata/georgia.fna"
     output:
-        "analysis/blastp/{database}.fasta"
+        "analysis/ref_genomes/genomes.fna"
+    shell:
+        "cat {input} > {output}"
+
+rule ref_genomes_makeblastdb:
+    input:
+        "analysis/ref_genomes/genomes.fna"
+    output:
+        "analysis/ref_genomes/genomes.fna.ndb"
+    conda:
+        "envs/blast.yaml"
+    shell:
+        "makeblastdb -in {input} -dbtype nucl"
+
+rule ref_genomes_tblastn:
+    input:
+        query = "rhodopsins/HeimdallR.faa",
+        ndb = "analysis/ref_genomes/genomes.fna.ndb",
+        db = "analysis/ref_genomes/genomes.fna"
+    output:
+        "analysis/tblastn/ref_genomes.txt"
+    params:
+        cols = [ 'qseqid', 'sseqid', 'pident', 'length', 'qlen', 'slen', 'qstart', 'qend', 'sstart', 'send', 'evalue', 'bitscore', 'sseq', 'stitle' ],
+        evalue = 1e-30
+    conda:
+        "envs/blast.yaml"
+    shell:
+        "tblastn -query {input.query} -db {input.db} -out {output} -outfmt '6 {params.cols}' -evalue {params.evalue}"
+
+rule link_gtdb_coding:
+    input:
+        "databases/rhodopsins/GTDB_coding.fna"
+    output:
+        "analysis/rhodopsin_cds/GTDB/coding.fna"
+    shell:
+        "cp {input} {output}"
+
+rule gtdb_coding_translate:
+    input:
+        "analysis/rhodopsin_cds/GTDB/coding.fna"
+    output:
+        "analysis/rhodopsin_cds/GTDB/coding.faa"
     conda:
         "envs/kits.yaml"
     shell:
-        "csvcut -c sseqid,sseq {input} | csvformat -T | sed 1d | seqkit tab2fx | seqkit seq -g -o {output}"
+        "seqkit seq -g {input} | seqkit translate -o {output}"
+
+rule gtdb_coding_tax:
+    input:
+        "analysis/rhodopsin_cds/GTDB/coding.fna"
+    output:
+        nodes = "analysis/rhodopsin_cds/GTDB/nodes.dmp",
+        names = "analysis/rhodopsin_cds/GTDB/names.dmp",
+        mapping = "analysis/rhodopsin_cds/GTDB/mapping",
+        merged = "analysis/rhodopsin_cds/GTDB/merged.dmp",
+        delnodes = "analysis/rhodopsin_cds/GTDB/delnodes.dmp"
+    conda:
+        "envs/biopython.yaml"
+    script:
+        "scripts/gtdb_tax.py"
+
+rule gtdb_codon_createdb:
+    input:
+        "analysis/rhodopsin_cds/GTDB/coding.faa"
+    output:
+        "analysis/rhodopsin_cds/GTDB/coding"
+    conda:
+        "envs/mmseqs2.yaml"
+    shell:
+        "mmseqs createdb {input} {output}"
+
+rule gtdb_codon_createtaxdb:
+    input:
+        db = "analysis/rhodopsin_cds/GTDB/coding",
+        nodes = "analysis/rhodopsin_cds/GTDB/nodes.dmp",
+        names = "analysis/rhodopsin_cds/GTDB/names.dmp",
+        mapping = "analysis/rhodopsin_cds/GTDB/mapping",
+        merged = "analysis/rhodopsin_cds/GTDB/merged.dmp",
+        delnodes = "analysis/rhodopsin_cds/GTDB/delnodes.dmp"
+    output:
+        "analysis/rhodopsin_cds/GTDB/coding_taxonomy"
+    conda:
+        "envs/mmseqs2.yaml"
+    shell:
+        "mmseqs createtaxdb {input.db} tmp --ncbi-tax-dump $(dirname {input.nodes}) --tax-mapping-file {input.mapping}"
 
 rule tblastn_gtdb:
     input:
-        query = "analysis/blastp/{database}.fasta",
-        ndb = "analysis/gtdb/rhodopsins-coding.fna.ndb",
-        db = "analysis/gtdb/rhodopsins-coding.fna"
+        query = "rhodopsins/{clade}.faa",
+        ndb = "databases/gtdb/gtdb_genomes_reps_r214.fna.ndb"
     output:
-        "analysis/blastp/{database}_gtdb.txt"
+        "analysis/tblastn/gtdb_{clade}.txt"
     params:
+        db = "databases/gtdb/gtdb_genomes_reps_r214.fna",
         cols = [ 'qseqid', 'sseqid', 'pident', 'length', 'qlen', 'slen', 'qstart', 'qend', 'sstart', 'send', 'evalue', 'bitscore', 'stitle' ],
-        max_seq = 20
+        max_seq = 1000,
+        evalue = 1e-5
     conda:
         "envs/blast.yaml"
     threads:
+        40
+    shell:
+        "tblastn -query {input.query} -db {params.db} -out {output} -outfmt '6 {params.cols}' -num_threads {threads} -max_target_seqs {params.max_seq} -evalue {params.evalue}"
+
+rule tblastn_gtdb_entries:
+    input:
+        tblastn = "analysis/tblastn/gtdb_{clade}.txt",
+        ndb = "databases/gtdb/gtdb_genomes_reps_r214.fna.ndb"
+    output:
+        "analysis/tblastn/gtdb_{clade}.fna"
+    params:
+        db = "databases/gtdb/gtdb_genomes_reps_r214.fna"
+    conda:
+        "envs/blast.yaml"
+    shell:
+        "cut -f2 {input.tblastn} | sort -u | blastdbcmd -entry_batch - -db {params.db} > {output}"
+
+#rule tblastn_gtdb_extract_regions:
+#    input:
+#        fasta = "analysis/tblastn/gtdb_{clade}.fna",
+#        tblastn = "analysis/tblastn/gtdb_{clade}.txt"
+#    output:
+#        "analysis/tblastn/gtdb_{clade}_cds.fna"
+#    params:
+#        cols = [ 'qseqid', 'sseqid', 'pident', 'length', 'qlen', 'slen', 'qstart', 'qend', 'sstart', 'send', 'evalue', 'bitscore', 'stitle' ],
+#        pident_max = 90,
+#        evalue_max = 1e-20,
+#        split_seqid = True
+#    conda:
+#        "envs/biopython.yaml"
+#    script:
+#        "scripts/extract_regions.py"
+
+# rule tblastn_ref_extract_regions:
+#    input:
+#        fasta = "analysis/ref_genomes/genomes.fna",
+#        tblastn = "analysis/tblastn/ref_genomes.txt"
+#    output:
+#        "analysis/tblastn/ref_genomes_cds.fna"
+#    params:
+#        cols = [ 'qseqid', 'sseqid', 'pident', 'length', 'qlen', 'slen', 'qstart', 'qend', 'sstart', 'send', 'evalue', 'bitscore', 'stitle' ]
+#    conda:
+#        "envs/biopython.yaml"
+#    script:
+#        "scripts/extract_regions.py"
+
+rule gtdb_heimdallr_matches:
+    input:
+        blastp = "analysis/blastp/GTDB-HeimdallR.txt",
+        fasta = "analysis/rhodopsin_cds/GTDB/coding.faa"
+    output:
+        "analysis/recomb/GTDB-HeimdallR.faa"
+    params:
+        evalue_col = 13,
+        sseqid_col = 2,
+        evalue = 1e-30
+    conda:
+        "envs/kits.yaml"
+    shell:
+        "awk '${params.evalue_col}<{params.evalue}' {input.blastp} | cut -f{params.sseqid_col} | seqkit grep -f- -o {output} {input.fasta}"
+
+rule gtdb_heimdallr_matches_cdhit:
+    input:
+        "analysis/recomb/GTDB-HeimdallR.faa"
+    output:
+        "analysis/recomb/GTDB-HeimdallR.cdhit"
+    params:
+        c = 0.62,
+        n = 2
+    conda:
+        "envs/cd-hit.yaml"
+    threads:
         10
     shell:
-        "tblastn -query {input.query} -db {input.db} -out {output} -outfmt '6 {params.cols}' -num_threads {threads} -max_target_seqs {params.max_seq}"
+        "cd-hit -i {input} -o {output} -c {params.c} -n {params.n} -d 0 -T {threads}"
 
-rule gtdb_hits:
+rule recomb_rhodopsin_sets:
     input:
-        "analysis/blastp/{database}_gtdb.txt"
+        "rhodopsins/{rhodopsin_set}.faa"
     output:
-        "analysis/blastp/{database}_gtdb.csv"
+        "analysis/recomb/{rhodopsin_set}.cdhit"
     params:
-        evalue = 1e-20,
-        pident = 66.7,
-        top_hits = 5,
-        ingroup_ratio = 0.51,
-        ingroup = 'd__Archaea',
-        cols = [ 'qseqid', 'sseqid', 'pident', 'length', 'qlen', 'slen', 'qstart', 'qend', 'sstart', 'send', 'evalue', 'bitscore', 'stitle' ]
+        c = 0.62,
+        n = 2
     conda:
-        "envs/pandas.yaml"
-    script:
-        "scripts/extract_gtdb_hits.py"
-
-rule copy_gtdb_rhodopsins:
-    input:
-        "databases/gtdb/rhodopsins-coding.fna"
-    output:
-        "analysis/gtdb/rhodopsins-coding.fna"
+        "envs/cd-hit.yaml"
     shell:
-        "cp {input} {output}"
+        "cd-hit -i {input} -o {output} -c {params.c} -n {params.n} -d 0"
+
+rule recomb_all_sequences:
+    input:
+        expand("analysis/recomb/{rhodopsin_set}.cdhit", rhodopsin_set = rhodopsin_sets),
+        "analysis/recomb/GTDB-HeimdallR.cdhit"
+    output:
+        "analysis/recomb/all_sequences.faa"
+    shell:
+        "cat {input} > {output}"
+
+rule recomb_cdhit:
+    input:
+        "analysis/recomb/all_sequences.faa"
+    output:
+        "analysis/recomb/all_sequences.cdhit"
+    params:
+        c = 0.99
+    conda:
+        "envs/cd-hit.yaml"
+    shell:
+        "cd-hit -i {input} -o {output} -c {params.c} -d 0"
+
+rule recomb_mafft:
+    input:
+        "analysis/recomb/all_sequences.cdhit"
+    output:
+        "analysis/recomb/all_sequences.mafft"
+    conda:
+        "envs/phylophlan.yaml"
+    threads:
+        10
+    shell:
+        "mafft --thread {threads} --auto --reorder {input} > {output}"
+
+rule get_trim_cds:
+    input:
+        "analysis/recomb/all_sequences.mafft"
+    output:
+        "analysis/recomb/all_sequences.mafft.trimmed.txt"
+    params:
+        mode = "gt 0.6"
+    conda:
+        "envs/phylophlan.yaml"
+    shell:
+        "trimal -{params.mode} -in {input} -colnumbering -out /dev/null > {output}"
+
+rule trim_cds_aln:
+    input:
+        fasta = "analysis/recomb/all_sequences.mafft",
+        trimal = "analysis/recomb/all_sequences.mafft.trimmed.txt"
+    output:
+        "analysis/recomb/all_sequences.trimmed.faa"
+    conda:
+        "envs/biopython.yaml"
+    script:
+        "scripts/trim_aln.py"
+
+rule gard_hyphy:
+    input:
+        "analysis/recomb/all_sequences.trimmed.faa"
+    output:
+        best_gard = "analysis/recomb/gard/best-gard",
+        fit_bf = "analysis/recomb/gard/best-gard.fit.bf",
+        json = "analysis/recomb/gard/GARD.json"
+    threads:
+        20
+    log:
+        "analysis/recomb/gard/gard.log"
+    shadow:
+        "minimal"
+    conda:
+        "envs/hyphy.yaml"
+    shell:
+        """
+        hyphy GARD --mode Faster --type amino-acid --rv Gamma --alignment {input} CPU={threads} &> {log}
+        mv {input}.best-gard {output.best_gard}
+        mv {input}.best-gard.fit.bf {output.fit_bf}
+        mv {input}.GARD.json {output.json}
+        """
+
+# not under conda
+rule geneconv:
+    input:
+        "analysis/recomb/all_sequences.trimmed.faa"
+    output:
+        "analysis/recomb/geneconv/geneconv.frags"
+    params:
+        seed = 123,
+        prefix = "analysis/recomb/geneconv/geneconv"
+    shadow:
+        "minimal"
+    log:
+        "analysis/recomb/geneconv/geneconv.log"
+    shell:
+        """
+        geneconv {input} -nolog -Seed={params.seed} -Gscale=1 -WideCols &> {log}
+        mv {params.prefix}.frags {output}
+        """
