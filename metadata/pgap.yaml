@@ -1,0 +1,37 @@
+topology: linear
+consortium: 'SkyNet consortium'
+sra:
+ - accession: ERR598969
+tp_assembly: true
+organism:
+   genus_species: 'Candidatus Heimdallarchaeota archaeon' 
+taxid:
+    2026747
+contact_info:
+   last_name: John
+   first_name: Smith
+   email: 'email@example.com'
+   organization: 'Institute of Klebsiella foobarensis research'
+   department: 'Department of Using NCBI'
+   phone: '301-555-0245'
+   street: '1234 Main St'
+   city: Docker
+   postal_code: 12345
+   country: USA
+authors:
+   - author:
+     first_name: John
+     last_name: Smith
+bioproject: PRJNA391943
+biosample: SAMN07619227      
+# -- Locus tag prefix - optional. Limited to 9 letters. Unless the locus tag prefix was officially assigned by NCBI, ENA, or DDBJ, it will be replaced upon submission of the annotation to NCBI and is therefore temporary and not to be used in publications. If not provided, pgaptmp will be used.
+locus_tag_prefix: KARIAR
+publications:
+   - publication:
+     pmid: 16397293
+     title: 'Discrete CHARMm of Klebsiella foobarensis. Journal of Improbable Results, vol. 34, issue 13, pages: 10001-100005, 2018'
+     status: published  # this is enum: controlled vocabulary
+     authors:
+     - author:
+       first_name: John
+       last_name: Smith

@@ -1,0 +1,4 @@
+residues:
+  ref: UXP70935.1
+  motif: [ 94, 98, 105 ]
+  fenestration: [ 153, 208 ]
