@@ -54,7 +54,8 @@ all_profiles <- bind_rows(list(om_rgc = om_rgc, jgi_img = jgi_img), .id = "Sourc
     summarize(target_pct = ifelse(any(clade == target_clade), 100 * value[clade == target_clade] / sum(value), 0), .groups = "drop") # ratio is the abundance of the target_clade relative to all the other clades
 
 genomes <- read_excel(genomes_file) %>%
-    filter(!is.na(rhodopsin), is.na(`redundant?`))
+    filter(!is.na(rhodopsin), is.na(redundant)) %>%
+    mutate(rhodopsin = gsub("[*]", "", rhodopsin))
 
 get_repel_coords <- function(.data, map_g, width, height, ...) {
     grid.newpage()

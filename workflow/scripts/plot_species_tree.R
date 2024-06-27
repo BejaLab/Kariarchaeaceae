@@ -8,32 +8,20 @@ library(readxl)
 library(phangorn)
 library(ggnewscale)
 library(ggplot2)
+library(ggtreeExtra)
 
 with(snakemake@input, {
     jplace_file <<- jplace
     newick_file <<- newick
     metadata_file <<- metadata
-    part_ref_file <<- part_ref
-    part_query_file <<- part_query
-    aln_file <<- aln
+    genes_file <<- genes
 })
-# jplace_file <- "analysis/proteins_cat_phylogeny/pplacer.jplace"
-# newick_file <- "analysis/proteins_cat_phylogeny/pplacer.newick"
+plot_file <- unlist(snakemake@output)
+# jplace_file <- "analysis/pplacer/pplacer.jplace"
+# newick_file <- "analysis/pplacer/pplacer.newick"
 # metadata_file <- "metadata/genomes.xlsx"
-# part_ref_file <- "analysis/proteins_cat_phylogeny/treeshrink.part"
-# part_query_file <- "analysis/proteins_cat_phylogeny/pplacer_input.part"
-# aln_file <- "analysis/proteins_cat_phylogeny/pplacer_input.fasta"
+# genes_file <- "analysis/pplacer/pplacer_input.txt"
 
-read_partitions <- function(file_name, aln) {
-    genes <- readLines(file_name) %>%
-        data.frame(line = .) %>%
-        extract(line, into = c("type", "gene", "start", "end"), regex = "(\\w+),\\s*(.+)\\s*=\\s*(\\d+)-(\\d+)", convert = T)
-    rowwise(genes) %>%
-        group_split %>%
-        lapply(function(x) data.frame(lapply(aln, function(y) any(y[x$start:x$end] != "-")), check.names = F)) %>%
-        bind_rows %>%
-        `rownames<-`(genes$gene)
-}
 add_mrca <- function(tree, colname) {
     colname <- deparse(substitute(colname))
     treedata <- to_treedata(tree)
@@ -59,18 +47,16 @@ to_treedata <- function(tree) {
     class(tree) <- c("tbl_tree", "tbl_df", "tbl", "data.frame")
     as.treedata(tree)
 }
-aln <- as.character(read.fasta(aln_file))
-part_ref <- read_partitions(part_ref_file, aln) %>%
-    {data.frame(genome = names(.), present = colSums(.), missing = colSums(!.))} %>%
-    filter(present > 0) %>%
+genes <- read.table(genes_file, col.names = c("genome", "gene", "set"))
+ref_genes <- filter(genes, set == "reference") %>%
+    mutate(total = n_distinct(gene)) %>%
+    group_by(genome) %>%
+    summarize(present = n(), missing = first(total) - present, .groups = "drop") %>%
     gather(type, num, -genome)
-part_query <- read_partitions(part_query_file, aln) %>%
-    mutate(gene = rownames(.)) %>%
-    gather(genome, present, -gene) %>%
-    filter(present)
+query_genes <- filter(genes, set == "query")
 
 metadata <- read_excel(metadata_file) %>%
-    separate(classification, into = c("genus", "species"), sep = ";")
+    separate(classification, into = c("domain", "phylum", "class", "order", "family", "genus", "species"), sep = ";")
 jplace <- read.jplace(jplace_file)
 
 lwr <- arrange(jplace@placements, -likelihood) %>%
@@ -107,9 +93,9 @@ p <- ggtree(to_treedata(tree), aes(color = !is.na(like_weight_ratio)), layout = 
     # scale_shape_manual(values = shapes) +
 
     new_scale_fill() +
-    geom_fruit(data = part_ref, geom = geom_bar, mapping = aes(y = genome, x = num, fill = type), orientation = "y", stat = "identity") +
+    geom_fruit(data = ref_genes, geom = geom_bar, mapping = aes(y = genome, x = num, fill = type), orientation = "y", stat = "identity") +
     new_scale_fill() +
-    geom_fruit(data = part_query, geom = geom_tile, mapping = aes(y = genome, x = gene, fill = gene), axis.params = c(axis = "x", text = "gene", text.size = 2, text.angle = 90, hjust = 1)) +
+    geom_fruit(data = query_genes, geom = geom_tile, mapping = aes(y = genome, x = gene, fill = gene), axis.params = c(axis = "x", text = "gene", text.size = 2, text.angle = 90, hjust = 1)) +
     
     geom_tiplab(aes(label = name), size = 2, offset = 0.075) +
     geom_cladelab(mapping = aes(subset = !is.na(genus_mrca), node = node, label = genus_mrca), align = T, offset = 0.6) +

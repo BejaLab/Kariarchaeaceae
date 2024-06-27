@@ -12,4 +12,4 @@ dependencies:
  - mappy
  - pip
  - pip:
-   - git+https://github.com/alephreish/SuperPang.git
+   - git+https://github.com/fpusan/SuperPang.git@93bb2794cd53b0d8f924568fd614f7492709c356

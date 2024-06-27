@@ -1,25 +1,33 @@
-
 from os import listdir, path
 from pandas import read_excel
 import yaml
+import warnings
+from math import ceil
 
 rhodopsin_sets ,= glob_wildcards("rhodopsins/{rhodopsin_set}.faa")
-metadata = read_excel("metadata/genomes.xlsx")
+
+with warnings.catch_warnings():
+    warnings.simplefilter("ignore")
+    metadata = read_excel("metadata/genomes.xlsx")
+    rhodopsins = read_excel("metadata/rhodopsins.xlsx")
 
 species = "Kariarchaeum pelagium"
+genus = species.split()[0]
 
-non_red = metadata[metadata['redundant?'].isna()]
-species_genomes = non_red[non_red['classification'].str.contains(species)]['genome'].tolist()
-non_species_genomes = non_red[~non_red['classification'].str.contains(species)]['genome'].tolist()
-all_genomes = species_genomes + non_species_genomes
+nonred_all = metadata[metadata['redundant'].isna()]
+nonred_bins = nonred_all[nonred_all['is_not_bin'].isna()]
+
+all_genomes = nonred_all['genome'].tolist()
+species_genomes = nonred_bins[nonred_bins['classification'].str.contains(species)]['genome'].tolist()
+other_genomes = nonred_bins[~nonred_bins['classification'].str.contains(species)]['genome'].tolist()
+scaffold_to_pplace = nonred_all[~nonred_all['is_not_bin'].isna()].iloc[0]['genome']
 
 configfile: "metadata/config.yaml"
 
 rule all:
     input:
-        # expand("analysis/genomes/{genome}_pfam_scan.jsonl", genome = genomes),
-        expand("analysis/recomb/openrdp-amino-acid/{method}.txt", method = [ 'geneconv', 'bootscan', 'maxchi', 'siscan', 'chimaera', 'threeseq', 'rdp' ]),
-        "analysis/recomb/gard-faa/GARD.json"
+        "output/species.svg",
+        "output/map.svg"
 
 rule copy_genome:
     input:
@@ -45,185 +53,76 @@ rule prodigal:
     shell:
         "prodigal -i {input} -a {output.faa} -d {output.cds} -f gff -o {output.gff} -p {params.proc}"
 
-rule prodigal_faa_files:
+rule faidx:
     input:
-        "analysis/genomes/{genome}.faa"
+        "{prefix}"
     output:
-        "analysis/homologs/input/{genome}.faa"
+        "{prefix}.fai"
     conda:
         "envs/kits.yaml"
     shell:
-        "seqkit replace -sp '[*]$' -o {output} {input}"
+        "seqkit faidx {input}"
 
-rule proteinortho:
+rule superpang_scaffolds:
     input:
-        expand("analysis/homologs/input/{genome}.faa", genome = species_genomes)
+        txt = "analysis/pangenome/superpang/core_origin.txt",
+        fna = "analysis/genomes/{genome}.fna",
+        fai = "analysis/genomes/{genome}.fna.fai"
     output:
-        "analysis/homologs/proteinortho.proteinortho.tsv"
-    shadow:
-        "minimal"
-    params:
-        evalue = 1e-100,
-        identity = 60
-    threads:
-        30
+        "analysis/pangenome/genomes/{genome}.fna"
     conda:
-        "envs/proteinortho.yaml"
+        "envs/kits.yaml"
     shell:
-        "proteinortho -project=proteinortho -cpus={threads} -e={params.evalue} -identity={params.identity} {input} && mv proteinortho.* $(dirname {output})"
+        "grep ^{wildcards.genome} {input.txt} | cut -f2 | xargs seqkit faidx {input.fna} > {output}"
 
-rule proteinortho_grab:
+rule prodigal_pangenome_scaffolds:
     input:
-        fasta = expand("analysis/homologs/input/{genome}.faa", genome = species_genomes),
-        tsv = "analysis/homologs/proteinortho.proteinortho.tsv"
+        "analysis/pangenome/genomes/{genome}.fna"
     output:
-        expand("analysis/homologs/output/{genome}.faa", genome = species_genomes)
-    params:
-        min = 4
+        faa = "analysis/pangenome/genomes/{genome}.faa",
+        cds = "analysis/pangenome/genomes/{genome}.cds",
+        gff = "analysis/pangenome/genomes/{genome}.gff"
     shadow:
         "minimal"
     conda:
-        "envs/proteinortho.yaml"
+        "envs/prodigal.yaml"
     shell:
-        """
-        proteinortho_grab_proteins.pl -minprot={params.min} -core <(awk 'NR>1{{$1=NF-3}}1' OFS='\\t' {input.tsv}) {input.fasta} && \
-            rename s/.core$// *.faa.core && mv *.faa $(dirname {output[0]})
-        """
-
-rule pfam_scan:
-    input:
-        "analysis/genomes/{genome}.faa"
-    output:
-        "analysis/genomes/{genome}_pfam_scan.jsonl"
-    conda:
-        "envs/pfam_scan.yaml"
-    params:
-        pfam = "pfam/hmmer/36.0"
-    threads:
-        2
-    shell:
-        "pfam_scan.pl -fasta {input} -dir {params.pfam} -json -cpu {threads} | jq -c .[] > {output}"
+        "prodigal -i {input} -a {output.faa} -d {output.cds} -f gff -o {output.gff} -p single"
 
 rule phylophlan_input:
     input:
-        expand("analysis/homologs/output/{genome}.faa", genome = species_genomes)
+        # expand("analysis/pangenome/tblastn/{genome}.faa", genome = species_genomes),
+        expand("analysis/pangenome/genomes/{genome}.faa", genome = species_genomes),
+        expand("analysis/genomes/{genome}.faa", genome = other_genomes)
     output:
         directory("analysis/proteins")
     shell:
         "mkdir {output} && cp {input} {output}/"
 
-checkpoint phylophlan:
+rule phylophlan:
     input:
         work_dir = "analysis/proteins",
         cfg = "metadata/phylophlan.cfg",
         maas = "metadata/phylophlan.tsv"
     output:
-        msa_dir = directory("analysis/proteins_phylophlan/data/trim_not_variant"),
-        tree_dir= directory("analysis/proteins_phylophlan/data/gene_tree1"),
-        trees = "analysis/proteins_phylophlan/proteins.tre"
+        info = "analysis/proteins_phylophlan/RAxML_info.proteins.tre",
+        aln = "analysis/proteins_phylophlan/proteins_concatenated.aln",
+        msas = directory("analysis/proteins_phylophlan/tmp/msas"),
+        tree = "analysis/proteins_phylophlan/RAxML_bipartitions.proteins.tre"
     params:
-        min_markers = 50,
-        diversity = "low"
+        diversity = "low",
+        min_entries = ceil(len(species_genomes + other_genomes) * 0.6)
     conda:
         "envs/phylophlan.yaml"
     threads:
         workflow.cores
     shell:
-        "phylophlan -i {input.work_dir} -t a -f {input.cfg} --diversity {params.diversity} --subsample full -d phylophlan --data_folder $(dirname {output.msa_dir}) --nproc {threads} --output_folder analysis --verbose --maas {input.maas} --min_num_markers {params.min_markers}"
-
-def get_marker_files(file_name, dir_name = "analysis/proteins_cat_phylogeny/markers"):
-    msa_dir = checkpoints.phylophlan.get().output['msa_dir']
-    files = []
-    for msa_file in listdir(msa_dir):
-        marker, ext = path.splitext(msa_file)
-        if ext == '.aln':
-            file = f"{dir_name}/{marker}/{file_name}"
-            files.append(file)
-    return files
-
-rule copy_msa:
-    input:
-        "analysis/proteins_phylophlan/data/trim_not_variant"
-    output:
-        "analysis/proteins_cat_phylogeny/markers/{marker}/input.fasta"
-    shell:
-        "cp {input}/{wildcards.marker}.aln {output}"
-
-rule copy_tree:
-    input:
-        "analysis/proteins_phylophlan/data/gene_tree1"
-    output:
-        "analysis/proteins_cat_phylogeny/markers/{marker}/input.tree"
-    params:
-        prefix = "RAxML_result."
-    shell:
-        "cp {input}/{params.prefix}{wildcards.marker}.tre {output}"
-
-rule treeshrink:
-    input:
-        msa = lambda w: get_marker_files("input.fasta"),
-        tre = lambda w: get_marker_files("input.tree")
-    output:
-        touch("analysis/proteins_cat_phylogeny/treeshrink.ok")
-    params:
-        dir_name = "analysis/proteins_cat_phylogeny/markers",
-        q = 0.05
-    conda:
-        "envs/treeshrink.yaml"
-    shell:
-        "run_treeshrink.py -i {params.dir_name} -O treeshrink -q {params.q} --force"
-
-rule cat_msas:
-    input:
-        lambda w: get_marker_files("input.fasta"),
-        "analysis/proteins_cat_phylogeny/treeshrink.ok"
-    output:
-        msa = "analysis/proteins_cat_phylogeny/treeshrink.fasta",
-        part = "analysis/proteins_cat_phylogeny/treeshrink.part"
-    params:
-        fasta = lambda w: get_marker_files("treeshrink.fasta")
-    conda:
-        "envs/phyx.yaml"
-    shell:
-        "pxcat -s {params.fasta} -o {output.msa} -p {output.part}"
-
-rule completeness:
-    input:
-        "analysis/homologs/proteinortho.proteinortho.tsv"
-    output:
-        "analysis/pangenome/completeness.tsv"
-    params:
-        genomes = species_genomes,
-        fraction = 0.25
-    conda:
-        "envs/r.yaml"
-    script:
-        "scripts/completeness.R"
-
-rule break_scaffolds:
-    input:
-        "genomes/{genome}.fna"
-    output:
-        "analysis/pangenome/contigs/{genome}.fna"
-    params:
-        gap = 10
-    conda:
-        "envs/biopython.yaml"
-    script:
-        "scripts/break_scaffolds.py"
-
-rule copy_genome_for_pangenome:
-    input:
-        "genomes/{genome}.fna"
-    output:
-        "analysis/pangenome/genomes/{genome}.fna"
-    shell:
-        "cp {input} {output}"
+        "phylophlan -i {input.work_dir} -t a -f {input.cfg} --diversity {params.diversity} --subsample full -d phylophlan --nproc {threads} --output_folder analysis --verbose --maas {input.maas} --min_num_entries {params.min_entries}"
 
 rule superpang:
     input:
-        genomes = expand("genomes/{genome}.fna", genome = species_genomes),
-        completeness = "analysis/pangenome/completeness.tsv"
+        fasta = expand("genomes/{genome}.fna", genome = species_genomes),
+        checkm = "analysis/checkm.txt"
     output:
         expand("analysis/pangenome/superpang/{file}", file = [ "assembly.fasta", "assembly.info.tsv" ]),
         expand("analysis/pangenome/superpang/{file}", file = [ "graph.fastg", "graph.NBP2origins.csv" ]),
@@ -239,32 +138,15 @@ rule superpang:
     threads:
         20
     shell:
-        "SuperPang.py -f {input.genomes} -o $(dirname {output[0]}) -t {threads} -q {input.completeness} -k {params.k} -i {params.ident} -b {params.ident} --gap-size {params.gap} --force-overwrite &> {log}"
-
-rule raxml:
-    input:
-        "analysis/proteins_cat_phylogeny/treeshrink.fasta"
-    output:
-        "analysis/proteins_cat_phylogeny/RAxML_info.txt",
-        "analysis/proteins_cat_phylogeny/RAxML_bipartitions.txt"
-    params:
-        model = "PROTCATLG",
-        seed = 123,
-        bootstrap = 1000
-    conda:
-        "envs/phylophlan.yaml"
-    threads:
-        20
-    shell:
-        "raxmlHPC-PTHREADS-SSE3 -f a -p {params.seed} -x {params.seed} -# {params.bootstrap} -m {params.model} -T {threads} -s {input} -n txt -w $(dirname $(realpath {output}))"
+        "SuperPang.py -f {input.fasta} -q {input.checkm} -o $(dirname {output[0]}) -t {threads} -k {params.k} -i {params.ident} -b {params.ident} --gap-size {params.gap} --force-overwrite &> {log}"
 
 rule taxit:
     input:
-        tree = "analysis/proteins_cat_phylogeny/RAxML_bipartitions.txt",
-        info = "analysis/proteins_cat_phylogeny/RAxML_info.txt",
-        aln = "analysis/proteins_cat_phylogeny/treeshrink.fasta"
+        tree = "analysis/proteins_phylophlan/RAxML_bipartitions.proteins.tre",
+        info = "analysis/proteins_phylophlan/RAxML_info.proteins.tre",
+        aln = "analysis/proteins_phylophlan/proteins_concatenated.aln"
     output:
-        directory("analysis/proteins_cat_phylogeny/RAxML.refpkg")
+        directory("analysis/proteins_phylophlan/RAxML.refpkg")
     conda:
         "envs/pplacer.yaml"
     shell:
@@ -272,10 +154,10 @@ rule taxit:
 
 rule pplacer:
     input:
-        refpkg = "analysis/proteins_cat_phylogeny/RAxML.refpkg",
-        fasta  = "analysis/proteins_cat_phylogeny/pplacer_input.fasta"
+        refpkg = "analysis/proteins_phylophlan/RAxML.refpkg",
+        fasta  = "analysis/pplacer/pplacer_input.fasta"
     output:
-        "analysis/proteins_cat_phylogeny/pplacer.jplace"
+        "analysis/pplacer/pplacer.jplace"
     conda:
         "envs/pplacer.yaml"
     shell:
@@ -303,44 +185,60 @@ rule makeblast_nucl:
 
 rule blastp:
     input:
-        query = "metadata/georgia.faa",
+        query = "analysis/genomes/{scaffold}.faa".format(scaffold = scaffold_to_pplace),
         db = "analysis/genomes/{genome}.faa",
         pdb = "analysis/genomes/{genome}.faa.pdb"
     output:
-        "analysis/georgia/blastp/{genome}.txt"
+        "analysis/pplacer/blastp/{genome}.txt"
     conda:
         "envs/blast.yaml"
     shell:
         "blastp -query {input.query} -db {input.db} -outfmt 6 -out {output}"
 
-rule blastp_collect:
+rule pplacer_input:
     input:
-        fasta = expand("analysis/genomes/{genome}.faa", genome = species_genomes),
-        blast = expand("analysis/georgia/blastp/{genome}.txt", genome = species_genomes),
-        query = "metadata/georgia.faa",
-        msa = "analysis/proteins_cat_phylogeny/treeshrink.fasta"
+        fasta = expand("analysis/genomes/{genome}.faa", genome = species_genomes + other_genomes),
+        blast = expand("analysis/pplacer/blastp/{genome}.txt", genome = species_genomes + other_genomes),
+        query = "analysis/genomes/{scaffold}.faa".format(scaffold = scaffold_to_pplace),
+        msas = "analysis/proteins_phylophlan/tmp/msas",
+        exclude = "analysis/blastp/all_genomes-HeimdallR.txt"
     output:
-        fasta = "analysis/proteins_cat_phylogeny/pplacer_input.fasta",
-        part = "analysis/proteins_cat_phylogeny/pplacer_input.part"
+        fasta = "analysis/pplacer/pplacer_input.fasta",
+        genes = "analysis/pplacer/pplacer_input.txt"
     params:
-        genomes = species_genomes,
-        query_genome = "Kari_Gs0128817",
+        genomes = species_genomes + other_genomes,
+        scaffold = scaffold_to_pplace,
         evalue = 1e-15,
         min_genes = 3
     conda:
         "envs/biopython.yaml"
     script:
-        "scripts/collect_homologs.py"
+        "scripts/pplacer_input.py"
 
 rule gappa:
     input:
-        "analysis/proteins_cat_phylogeny/pplacer.jplace"
+        "analysis/pplacer/pplacer.jplace"
     output:
-        "analysis/proteins_cat_phylogeny/pplacer.newick"
+        "analysis/pplacer/pplacer.newick"
     conda:
         "envs/gappa.yaml"
     shell:
         "gappa examine graft --jplace-path {input} --out-dir $(dirname {output})"
+
+rule plot_species_tree:
+    input:
+        jplace = "analysis/pplacer/pplacer.jplace",
+        newick = "analysis/pplacer/pplacer.newick",
+        metadata = "metadata/genomes.xlsx",
+        genes = "analysis/pplacer/pplacer_input.txt"
+    output:
+        "output/species.svg"
+    params:
+        genomes = species_genomes
+    conda:
+        "envs/r.yaml"
+    script:
+        "scripts/plot_species_tree.R"
 
 rule rhodopsins_cat:
     input:
@@ -417,18 +315,45 @@ rule rhodopsins_plot:
     script:
         "scripts/plot_protein_tree.R"
 
-rule superpang_filter:
+rule superpang_core_origin:
+    input:
+        info = "analysis/pangenome/superpang/assembly.info.tsv",
+        origins = "analysis/pangenome/superpang/NBP2origins.tsv"
+    output:
+        "analysis/pangenome/superpang/core_origin.txt"
+    conda:
+        "envs/pandas.yaml"
+    script:
+        "scripts/core_origin.py"
+
+rule superpang_core_fasta:
     input:
         info = "analysis/pangenome/superpang/assembly.info.tsv",
         fasta = "analysis/pangenome/superpang/assembly.fasta"
     output:
-        "analysis/pangenome/pgap/assembly.fna"
-    params:
-        set = 'core'
+        "analysis/pangenome/superpang/assembly.core.fna"
     conda:
         "envs/kits.yaml"
     shell:
-        "grep -E core {input.info} | cut -f1 | seqkit grep -f- {input.fasta} -o {output}"
+        "csvgrep -t -c regions -m core {input.info} | csvcut -c id | sed 1d | seqkit grep -f- {input.fasta} -o {output}"
+
+rule superpang_makeblastdb:
+    input:
+        "analysis/pangenome/superpang/assembly.core.fna"
+    output:
+        "analysis/pangenome/superpang/assembly.core.fna.ndb"
+    conda:
+        "envs/blast.yaml"
+    shell:
+        "makeblastdb -in {input} -dbtype nucl"
+
+rule copy_assembly_core:
+    input:
+        "analysis/pangenome/superpang/assembly.core.fna"
+    output:
+        "analysis/pangenome/pgap/superpang.fna"
+    shell:
+        "cp {input} {output}"
 
 rule copy_submol:
     input:
@@ -478,17 +403,13 @@ rule checkm_dload:
     shell:
         "mkdir -p {output} && wget -O- {params.url} | tar xvz -C {output}"
 
-rule checkm_all:
-    input:
-        expand("analysis/checkm/{genome}", genome = species_genomes)
-
 rule checkm_genomes:
     input:
         data = "analysis/checkm_database",
-        fasta = "analysis/genomes/{genome}.fna"
+        fasta = expand("analysis/genomes/{genome}.fna", genome = species_genomes + other_genomes)
     output:
-        dir = directory("analysis/checkm/{genome}"),
-        txt = "analysis/checkm/{genome}.txt"
+        dir = directory("analysis/checkm"),
+        txt = "analysis/checkm.txt"
     params:
         domain = "Archaea"
     conda:
@@ -498,12 +419,12 @@ rule checkm_genomes:
     threads:
         10
     shell:
-        "CHECKM_DATA_PATH={input.data} checkm taxonomy_wf domain {params.domain} $(dirname {input.fasta}) {output.dir} -f {output.txt} -t {threads}"
+        "CHECKM_DATA_PATH={input.data} checkm taxonomy_wf domain {params.domain} $(dirname {input.fasta[0]}) {output.dir} -f {output.txt} -t {threads}"
 
 rule checkm_pangenome:
     input:
         data = "analysis/checkm_database",
-        fasta = "analysis/pangenome/pgap/assembly.fna"
+        fasta = "analysis/pangenome/superpang/assembly.core.fna"
     output:
         directory("analysis/pangenome/checkm")
     params:
@@ -706,55 +627,13 @@ rule subclades_kariarchaeum_cdhit:
 
 rule subclades_mafft:
     input:
-        "analysis/subclades/{taxon}-{clade}/cdhit.fasta",
-        "rhodopsins/references.faa"
+        "analysis/subclades/{taxon}-{clade}/cdhit.fasta"
     output:
         "analysis/subclades/{taxon}-{clade}/mafft.fasta"
     conda:
         "envs/phylophlan.yaml"
     shell:
-        "cat {input} | mafft --reorder --auto - > {output}"
-
-rule subclades_trimal:
-    input:
-        "analysis/subclades/{taxon}-{clade}/mafft.fasta"
-    output:
-        "analysis/subclades/{taxon}-{clade}/trimal.fasta"
-    params:
-        gt = 0.1
-    conda:
-        "envs/phylophlan.yaml"
-    shell:
-        "trimal -in {input} -out {output} -gt {params.gt} -keepheader"
-
-rule subclades_trimal_long:
-    input:
-        "analysis/subclades/{taxon}-{clade}/trimal.fasta"
-    output:
-        "analysis/subclades/{taxon}-{clade}/trimal.long.fasta"
-    params:
-        m = 210
-    conda:
-        "envs/kits.yaml"
-    shell:
-        "seqkit seq -nigm {params.m} {input} | seqkit grep -o {output} -f- {input}"
-
-rule subclades_raxml:
-    input:
-        "analysis/subclades/{taxon}-{clade}/trimal.long.fasta"
-    output:
-        "analysis/subclades/{taxon}-{clade}/RAxML_info.txt",
-        "analysis/subclades/{taxon}-{clade}/RAxML_bipartitions.txt"
-    params:
-        model = "PROTCATLG",
-        seed = 123,
-        bootstrap = 1000
-    conda:
-        "envs/phylophlan.yaml"
-    threads:
-        20
-    shell:
-        "raxmlHPC-PTHREADS-SSE3 -f a -p {params.seed} -x {params.seed} -# {params.bootstrap} -m {params.model} -T {threads} -s {input} -n txt -w $(dirname $(realpath {output}))"
+        "mafft --reorder --auto {input} > {output}"
 
 rule blastp_merge_hits:
     input:
@@ -847,7 +726,7 @@ rule plot_map:
         om_rgc_matches = "analysis/profiles/OM-RGC_v2_orfs_matches.csv",
         om_rgc_samples = "analysis/profiles/OM-RGC_v2_orfs_samples.csv"
     output:
-        "output/map.pdf"
+        "output/map.svg"
     conda:
         "envs/r-map.yaml"
     script:
@@ -871,7 +750,7 @@ rule tblastn_filter_hits:
 rule ref_genomes_cat:
     input:
         expand("genomes/{genome}.fna", genome = species_genomes),
-        "metadata/georgia.fna"
+        "metadata/pplacer.fna"
     output:
         "analysis/ref_genomes/genomes.fna"
     shell:
@@ -989,35 +868,6 @@ rule tblastn_gtdb_entries:
         "envs/blast.yaml"
     shell:
         "cut -f2 {input.tblastn} | sort -u | blastdbcmd -entry_batch - -db {params.db} > {output}"
-
-#rule tblastn_gtdb_extract_regions:
-#    input:
-#        fasta = "analysis/tblastn/gtdb_{clade}.fna",
-#        tblastn = "analysis/tblastn/gtdb_{clade}.txt"
-#    output:
-#        "analysis/tblastn/gtdb_{clade}_cds.fna"
-#    params:
-#        cols = [ 'qseqid', 'sseqid', 'pident', 'length', 'qlen', 'slen', 'qstart', 'qend', 'sstart', 'send', 'evalue', 'bitscore', 'stitle' ],
-#        pident_max = 90,
-#        evalue_max = 1e-20,
-#        split_seqid = True
-#    conda:
-#        "envs/biopython.yaml"
-#    script:
-#        "scripts/extract_regions.py"
-
-# rule tblastn_ref_extract_regions:
-#    input:
-#        fasta = "analysis/ref_genomes/genomes.fna",
-#        tblastn = "analysis/tblastn/ref_genomes.txt"
-#    output:
-#        "analysis/tblastn/ref_genomes_cds.fna"
-#    params:
-#        cols = [ 'qseqid', 'sseqid', 'pident', 'length', 'qlen', 'slen', 'qstart', 'qend', 'sstart', 'send', 'evalue', 'bitscore', 'stitle' ]
-#    conda:
-#        "envs/biopython.yaml"
-#    script:
-#        "scripts/extract_regions.py"
 
 rule gtdb_heimdallr_matches:
     input:
@@ -1139,23 +989,4 @@ rule gard_hyphy:
         mv {input}.best-gard {output.best_gard}
         mv {input}.best-gard.fit.bf {output.fit_bf}
         mv {input}.GARD.json {output.json}
-        """
-
-# not under conda
-rule geneconv:
-    input:
-        "analysis/recomb/all_sequences.trimmed.faa"
-    output:
-        "analysis/recomb/geneconv/geneconv.frags"
-    params:
-        seed = 123,
-        prefix = "analysis/recomb/geneconv/geneconv"
-    shadow:
-        "minimal"
-    log:
-        "analysis/recomb/geneconv/geneconv.log"
-    shell:
-        """
-        geneconv {input} -nolog -Seed={params.seed} -Gscale=1 -WideCols &> {log}
-        mv {params.prefix}.frags {output}
         """
