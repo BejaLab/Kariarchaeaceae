@@ -4,3 +4,5 @@ channels:
 dependencies:
  - pplacer=1.1.alpha19
  - taxtastic=0.10.0
+variables:
+ LC_ALL: C

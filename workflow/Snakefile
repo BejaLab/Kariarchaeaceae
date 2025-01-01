@@ -27,7 +27,8 @@ configfile: "metadata/config.yaml"
 rule all:
     input:
         "output/species.svg",
-        "output/map.svg"
+        "output/map.svg",
+        "output/map_pfam.svg"
 
 rule copy_genome:
     input:
@@ -99,10 +100,25 @@ rule phylophlan_input:
     shell:
         "mkdir {output} && cp {input} {output}/"
 
+rule phylophlan_config:
+    input:
+        "metadata/phylophlan.cfg"
+    output:
+        "analysis/proteins_phylophlan/phylophlan.cfg"
+    params:
+        model = "PROTCATAUTO",
+        trimal = "gappyout",
+        mafft = "auto",
+        evalue = 1e-10,
+        seed = 123,
+        n_boot = 1000
+    shell:
+        "MODEL={params.model} SEED={params.seed} N_BOOT={params.n_boot} TRIMAL={params.trimal} MAFFT={params.mafft} EVALUE={params.evalue} envsubst < {input} > {output}"
+
 rule phylophlan:
     input:
         work_dir = "analysis/proteins",
-        cfg = "metadata/phylophlan.cfg",
+        cfg = "analysis/proteins_phylophlan/phylophlan.cfg",
         maas = "metadata/phylophlan.tsv"
     output:
         info = "analysis/proteins_phylophlan/RAxML_info.proteins.tre",
@@ -118,6 +134,38 @@ rule phylophlan:
         workflow.cores
     shell:
         "phylophlan -i {input.work_dir} -t a -f {input.cfg} --diversity {params.diversity} --subsample full -d phylophlan --nproc {threads} --output_folder analysis --verbose --maas {input.maas} --min_num_entries {params.min_entries}"
+
+rule prottest:
+    input:
+        "analysis/pplacer/pplacer_references.fasta",
+    output:
+        "analysis/pplacer/pplacer_prottest.txt"
+    params:
+        flags = [ "-F", "-G" ],
+        models = [ "-LG", "-WAG" ]
+    conda:
+        "envs/prottest3.yaml"
+    shell:
+        "prottest3 -i {input} -o {output} {params.flags} {params.models}"
+
+rule raxml_evaluate:
+    input:
+        aln = "analysis/pplacer/pplacer_references.fasta",
+        tree = "analysis/proteins_phylophlan/RAxML_bipartitions.proteins.tre",
+        prottest = "analysis/pplacer/pplacer_prottest.txt"
+    output:
+        tree = "analysis/pplacer/RAxML_result.pplacer",
+        info = "analysis/pplacer/RAxML_info.pplacer"
+    params:
+        suffix = "pplacer"
+    conda:
+        "envs/phylophlan.yaml"
+    shell:
+        """
+        model=$(grep -m1 '^Best model according to BIC' {input.prottest} | cut -f6 -d" " | sed -e 's/+G//' -e 's/+F/F/')
+        out_dir=$(realpath $(dirname {output.tree}))
+        raxmlHPC-PTHREADS-SSE3 -f e -t {input.tree} -s {input.aln} -m "PROTGAMMA${{model}}" -n {params.suffix} -w "$out_dir"
+        """
 
 rule superpang:
     input:
@@ -142,11 +190,11 @@ rule superpang:
 
 rule taxit:
     input:
-        tree = "analysis/proteins_phylophlan/RAxML_bipartitions.proteins.tre",
-        info = "analysis/proteins_phylophlan/RAxML_info.proteins.tre",
-        aln = "analysis/proteins_phylophlan/proteins_concatenated.aln"
+        tree = "analysis/pplacer/RAxML_result.pplacer",
+        info = "analysis/pplacer/RAxML_info.pplacer",
+        aln = "analysis/pplacer/pplacer_references.fasta"
     output:
-        directory("analysis/proteins_phylophlan/RAxML.refpkg")
+        directory("analysis/pplacer/RAxML.refpkg")
     conda:
         "envs/pplacer.yaml"
     shell:
@@ -154,14 +202,15 @@ rule taxit:
 
 rule pplacer:
     input:
-        refpkg = "analysis/proteins_phylophlan/RAxML.refpkg",
-        fasta  = "analysis/pplacer/pplacer_input.fasta"
+        refpkg = "analysis/pplacer/RAxML.refpkg",
+        references = "analysis/pplacer/pplacer_references.fasta",
+        queries = "analysis/pplacer/pplacer_queries.fasta"
     output:
         "analysis/pplacer/pplacer.jplace"
     conda:
         "envs/pplacer.yaml"
     shell:
-        "pplacer -o {output} -c {input.refpkg} {input.fasta}"
+        "pplacer -o {output} -c {input.refpkg} -r {input.references} {input.queries}"
 
 rule makeblast_prot:
     input:
@@ -203,7 +252,8 @@ rule pplacer_input:
         msas = "analysis/proteins_phylophlan/tmp/msas",
         exclude = "analysis/blastp/all_genomes-HeimdallR.txt"
     output:
-        fasta = "analysis/pplacer/pplacer_input.fasta",
+        queries = "analysis/pplacer/pplacer_queries.fasta",
+        references = "analysis/pplacer/pplacer_references.fasta",
         genes = "analysis/pplacer/pplacer_input.txt"
     params:
         genomes = species_genomes + other_genomes,
@@ -225,10 +275,21 @@ rule gappa:
     shell:
         "gappa examine graft --jplace-path {input} --out-dir $(dirname {output})"
 
+rule transfer_supports:
+    input:
+        "analysis/proteins_phylophlan/RAxML_bipartitions.proteins.tre",
+        "analysis/pplacer/pplacer.newick"
+    output:
+        "analysis/pplacer/pplacer_with_supports.newick"
+    conda:
+        "envs/dendropy.yaml"
+    script:
+        "scripts/transfer_supports.py"
+
 rule plot_species_tree:
     input:
         jplace = "analysis/pplacer/pplacer.jplace",
-        newick = "analysis/pplacer/pplacer.newick",
+        newick = "analysis/pplacer/pplacer_with_supports.newick",
         metadata = "metadata/genomes.xlsx",
         genes = "analysis/pplacer/pplacer_input.txt"
     output:
@@ -687,6 +748,34 @@ rule dload_map:
     shell:
         "wget -O tmp.zip '{params.url}' && unzip tmp.zip -d $(dirname {output})"
 
+rule om_rgc_profiles_PF01036:
+    input:
+        clades = "analysis/hmmsearch/OM-RGC_v2_orfs.faa-PF01036.csv",
+        profile_metaG = "databases/faa/OM-RGC_v2_gene_profile_metaG.tsv",
+        profile_metaT = "databases/faa/OM-RGC_v2_gene_profile_metaT.tsv",
+        metadata = "databases/faa/Salazar_et_al_2019_Suppl_Info.xlsx"
+    output:
+        profiles = "analysis/profiles/OM-RGC_v2_orfs_PF01036_profiles.csv",
+        matches = "analysis/profiles/OM-RGC_v2_orfs_PF01036_matches.csv",
+        samples = "analysis/profiles/OM-RGC_v2_orfs_PF01036_samples.csv"
+    conda:
+        "envs/pandas.yaml"
+    script:
+        "scripts/om_rgc_profiles.py"
+
+rule jgi_img_profiles_PF01036:
+    input:
+        clades = "analysis/hmmsearch/JGI_IMG_unrestricted.faa-PF01036.csv",
+        profile = "databases/faa/JGI_IMG_unrestricted.gene_info.txt"
+    output:
+        profiles = "analysis/profiles/JGI_IMG_unrestricted_PF01036_profiles.csv",
+        matches = "analysis/profiles/JGI_IMG_unrestricted_PF01036_matches.csv",
+        samples = "analysis/profiles/JGI_IMG_unrestricted_PF01036_samples.csv"
+    conda:
+        "envs/pandas.yaml"
+    script:
+        "scripts/jgi_img_profiles.py"
+
 rule om_rgc_profiles:
     input:
         clades = "analysis/blastp/OM-RGC_v2_orfs.faa_clades.csv",
@@ -715,7 +804,7 @@ rule jgi_img_profiles:
     script:
         "scripts/jgi_img_profiles.py"
 
-rule plot_map:
+rule plot_map_clades:
     input:
         genomes = "metadata/genomes.xlsx",
         shape = "analysis/maps/land/ne_110m_land.shp",
@@ -726,7 +815,39 @@ rule plot_map:
         om_rgc_matches = "analysis/profiles/OM-RGC_v2_orfs_matches.csv",
         om_rgc_samples = "analysis/profiles/OM-RGC_v2_orfs_samples.csv"
     output:
-        "output/map.svg"
+        plot = "output/map.svg",
+        all_profiles = "output/map_all_profiles.csv",
+        om_rgc = "output/map_om_rgc.csv",
+        jgi_img = "output/map_jgi_img.csv"
+    params:
+        clade = "HeimdallR",
+        max_depth = 200,
+        size_breaks = list(range(5, 21, 5))
+    conda:
+        "envs/r-map.yaml"
+    script:
+        "scripts/plot_map.R"
+
+rule plot_map_pfam:
+    input:
+        genomes = "metadata/genomes.xlsx",
+        shape = "analysis/maps/land/ne_110m_land.shp",
+        jgi_img_profiles = [ "analysis/profiles/JGI_IMG_unrestricted_profiles.csv", "analysis/profiles/JGI_IMG_unrestricted_PF01036_profiles.csv" ],
+        jgi_img_matches = [ "analysis/profiles/JGI_IMG_unrestricted_matches.csv", "analysis/profiles/JGI_IMG_unrestricted_PF01036_matches.csv" ],
+        jgi_img_samples = [ "analysis/profiles/JGI_IMG_unrestricted_samples.csv", "analysis/profiles/JGI_IMG_unrestricted_PF01036_samples.csv" ],
+        om_rgc_profiles = [ "analysis/profiles/OM-RGC_v2_orfs_profiles.csv", "analysis/profiles/OM-RGC_v2_orfs_PF01036_profiles.csv" ],
+        om_rgc_matches = [ "analysis/profiles/OM-RGC_v2_orfs_matches.csv", "analysis/profiles/OM-RGC_v2_orfs_PF01036_matches.csv" ],
+        om_rgc_samples = [ "analysis/profiles/OM-RGC_v2_orfs_samples.csv", "analysis/profiles/OM-RGC_v2_orfs_PF01036_samples.csv" ]
+    output:
+        plot = "output/map_pfam.svg",
+        all_profiles = "output/map_all_profiles_pfam.csv",
+        om_rgc = "output/map_om_rgc_pfam.csv",
+        jgi_img = "output/map_jgi_img_pfam.csv"
+    params:
+        clade = "HeimdallR",
+        total_clade = "Bac_rhodopsin",
+        max_depth = 200,
+        size_breaks = [ 0.0001, 0.001, 0.01, 0.1, 0.5, 1, 10 ]
     conda:
         "envs/r-map.yaml"
     script:
@@ -869,35 +990,85 @@ rule tblastn_gtdb_entries:
     shell:
         "cut -f2 {input.tblastn} | sort -u | blastdbcmd -entry_batch - -db {params.db} > {output}"
 
-rule gtdb_heimdallr_matches:
+rule gtdb_matches:
     input:
-        blastp = "analysis/blastp/GTDB-HeimdallR.txt",
-        fasta = "analysis/rhodopsin_cds/GTDB/coding.faa"
+        blastp = "analysis/blastp/GTDB-{clade}.txt",
+        fasta = "analysis/rhodopsin_cds/GTDB/coding.faa",
+        ref = "rhodopsins/{clade}.faa"
     output:
-        "analysis/recomb/GTDB-HeimdallR.faa"
+        "analysis/recomb/GTDB-{clade}.faa"
     params:
         evalue_col = 13,
         sseqid_col = 2,
-        evalue = 1e-30
+        evalue = 1e-20
     conda:
         "envs/kits.yaml"
     shell:
-        "awk '${params.evalue_col}<{params.evalue}' {input.blastp} | cut -f{params.sseqid_col} | seqkit grep -f- -o {output} {input.fasta}"
+        "awk '${params.evalue_col}<{params.evalue}' {input.blastp} | cut -f{params.sseqid_col} | seqkit grep -f- {input.fasta} | cat {input.ref} - | seqkit rmdup | seqkit rmdup -s -o {output}"
 
-rule gtdb_heimdallr_matches_cdhit:
+rule gtdb_combine_matches:
     input:
-        "analysis/recomb/GTDB-HeimdallR.faa"
+        expand("analysis/recomb/GTDB-{clade}.faa", clade = [ "HeimdallR", "ACA", "ACB" ])
     output:
-        "analysis/recomb/GTDB-HeimdallR.cdhit"
+        "analysis/recomb/GTDB_combined.faa"
+    conda:
+        "envs/kits.yaml"
+    shell:
+        "seqkit rmdup -o {output} {input}"
+
+rule gtdb_matches_cdhit:
+    input:
+        "analysis/recomb/GTDB_combined.faa"
+    output:
+        fasta = "analysis/recomb/GTDB_combined.cdhit",
+        clstr = "analysis/recomb/GTDB_combined.cdhit.clstr"
     params:
-        c = 0.62,
+        c = 0.9,
         n = 2
     conda:
         "envs/cd-hit.yaml"
     threads:
         10
     shell:
-        "cd-hit -i {input} -o {output} -c {params.c} -n {params.n} -d 0 -T {threads}"
+        "cd-hit -i {input} -o {output.fasta} -c {params.c} -n {params.n} -d 0 -T {threads}"
+
+rule gtdb_cluster_reps:
+    input:
+        refs = expand("rhodopsins/{clade}.faa", clade = [ "HeimdallR", "ACA", "ACB" ]),
+        clstr = "analysis/recomb/GTDB_combined.cdhit.clstr",
+        fasta = "analysis/recomb/GTDB_combined.faa"
+    output:
+        "analysis/recomb/GTDB_combined_reps.faa"
+    conda:
+        "envs/biopython.yaml"
+    script:
+        "scripts/cluster_reps.py"
+
+rule gtdb_heimdallr_matches_select:
+    input:
+        # additional = "analysis/recomb/recomb-additional.faa",
+        matches = "analysis/recomb/GTDB-HeimdallR.fna",
+        clstr = "analysis/recomb/GTDB-HeimdallR.cdhit.clstr",
+        blast = "analysis/blastp/GTDB-HeimdallR.txt"
+    output:
+        "analysis/recomb/GTDB-HeimdallR-selected.fna"
+    params:
+        max_ident = 50,
+        cols = [ 'qseqid', 'sseqid', 'pident', 'length', 'qlen', 'slen', 'qseq', 'sseq', 'qstart', 'qend', 'sstart', 'send', 'evalue', 'bitscore', 'stitle' ]
+    conda:
+        "envs/biopython.yaml"
+    script:
+        "scripts/select_matches.py"
+
+rule gtdb_heimdallr_matches_translate:
+    input:
+        "analysis/recomb/GTDB-HeimdallR-selected.fna"
+    output:
+        "analysis/recomb/GTDB-HeimdallR-selected.faa"
+    conda:
+        "envs/kits.yaml"
+    shell:
+        "seqkit translate -o {output} {input}"
 
 rule recomb_rhodopsin_sets:
     input:
@@ -905,8 +1076,8 @@ rule recomb_rhodopsin_sets:
     output:
         "analysis/recomb/{rhodopsin_set}.cdhit"
     params:
-        c = 0.62,
-        n = 2
+        c = 0.9,
+        n = 3
     conda:
         "envs/cd-hit.yaml"
     shell:
@@ -935,9 +1106,9 @@ rule recomb_cdhit:
 
 rule recomb_mafft:
     input:
-        "analysis/recomb/all_sequences.cdhit"
+        "analysis/recomb/GTDB_combined_reps.faa"
     output:
-        "analysis/recomb/all_sequences.mafft"
+        "analysis/recomb/GTDB_combined_reps.mafft"
     conda:
         "envs/phylophlan.yaml"
     threads:
@@ -945,24 +1116,48 @@ rule recomb_mafft:
     shell:
         "mafft --thread {threads} --auto --reorder {input} > {output}"
 
-rule get_trim_cds:
+rule recomb_backtrans:
     input:
-        "analysis/recomb/all_sequences.mafft"
+        fna = "analysis/recomb/GTDB-HeimdallR-selected.fna",
+        aln = "analysis/recomb/GTDB-HeimdallR-selected.mafft"
     output:
-        "analysis/recomb/all_sequences.mafft.trimmed.txt"
-    params:
-        mode = "gt 0.6"
+        "analysis/recomb/GTDB-HeimdallR-selected.mafft.fna"
     conda:
         "envs/phylophlan.yaml"
     shell:
-        "trimal -{params.mode} -in {input} -colnumbering -out /dev/null > {output}"
+        "trimal -backtrans {input.fna} -in {input.aln} -out {output} -splitbystopcodon"
+
+rule recomb_trim:
+    input:
+        "analysis/recomb/GTDB_combined_reps.mafft"
+    output:
+        txt = "analysis/recomb/GTDB_combined_reps_trimmed_all.txt",
+        fas = "analysis/recomb/GTDB_combined_reps_trimmed_all.faa"
+    params:
+        gt = 0.4
+    conda:
+        "envs/phylophlan.yaml"
+    shell:
+        "trimal -gt {params.gt} -in {input} -colnumbering -out {output.fas} > {output.txt}"
+
+rule recomb_drop_short:
+    input:
+        "analysis/recomb/GTDB_combined_reps_trimmed_all.faa"
+    output:
+        "analysis/recomb/GTDB_combined_reps_trimmed.faa"
+    params:
+        m = 200
+    conda:
+        "envs/kits.yaml"
+    shell:
+        "seqkit seq -nigm {params.m} {input} | seqkit grep -f- {input} > {output}"
 
 rule trim_cds_aln:
     input:
         fasta = "analysis/recomb/all_sequences.mafft",
         trimal = "analysis/recomb/all_sequences.mafft.trimmed.txt"
     output:
-        "analysis/recomb/all_sequences.trimmed.faa"
+        "analysis/recomb/all_sequences.trimmed_ends.fna"
     conda:
         "envs/biopython.yaml"
     script:
@@ -970,11 +1165,16 @@ rule trim_cds_aln:
 
 rule gard_hyphy:
     input:
-        "analysis/recomb/all_sequences.trimmed.faa"
+        "analysis/recomb/GTDB-HeimdallR-selected.trimmed.faa"
     output:
         best_gard = "analysis/recomb/gard/best-gard",
         fit_bf = "analysis/recomb/gard/best-gard.fit.bf",
         json = "analysis/recomb/gard/GARD.json"
+    params:
+        max_breakpoints = 5,
+        rate_classes = 3,
+        rv = "GDD",
+        type = "amino-acid"
     threads:
         20
     log:
@@ -985,8 +1185,59 @@ rule gard_hyphy:
         "envs/hyphy.yaml"
     shell:
         """
-        hyphy GARD --mode Faster --type amino-acid --rv Gamma --alignment {input} CPU={threads} &> {log}
+        hyphy GARD --mode Faster --type {params.type} --rv {params.rv} --rate-classes {params.rate_classes} --max-breakpoints {params.max_breakpoints} --alignment {input} CPU={threads} &> {log}
         mv {input}.best-gard {output.best_gard}
         mv {input}.best-gard.fit.bf {output.fit_bf}
         mv {input}.GARD.json {output.json}
         """
+
+rule geneconv:
+    input:
+        "analysis/recomb/GTDB_combined_reps_trimmed.faa"
+    output:
+        "analysis/recomb/GTDB_combined_reps_geneconv.frags"
+    params:
+        seed = 123,
+        prefix = "analysis/recomb/GTDB_combined_reps_trimmed"
+    shadow:
+        "minimal"
+    log:
+        "analysis/recomb/GTDB_combined_reps_geneconv.frags.log"
+    shell:
+        """
+        geneconv {input} -nolog -Seed={params.seed} -Gscale=1 -WideCols &> {log}
+        mv {params.prefix}.frags {output}
+        """
+
+rule pfam_dload:
+    output:
+        "analysis/pfam/{profile}.hmm"
+    params:
+        url = "https://www.ebi.ac.uk/interpro/wwwapi/entry/pfam/{profile}?annotation=hmm"
+    shell:
+        "wget -O- {params.url} | gzip -cd > {output}"
+
+rule pfam_hmmsearch:
+    input:
+        hmm = "analysis/pfam/{profile}.hmm",
+        pdb = "databases/faa/{database}.pdb"
+    output:
+        "analysis/hmmsearch/{database}-{profile}.txt"
+    params:
+        db = "databases/faa/{database}",
+    conda:
+        "envs/hmmer.yaml"
+    threads:
+        4
+    shell:
+        "blastdbcmd -db {params.db} -entry all | hmmsearch --cut_ga -o {output} --cpu {threads} {input.hmm} -"
+
+rule pfam_csv:
+    input:
+        "analysis/hmmsearch/{database}-{profile}.txt"
+    output:
+        "analysis/hmmsearch/{database}-{profile}.csv"
+    conda:
+        "envs/bioformats.yaml"
+    script:
+        "scripts/hmmsearch_to_csv.py"

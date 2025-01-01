@@ -1,1 +1,0 @@
-git+https://github.com/alephreish/SuperPang.git@93bb2794cd53b0d8f924568fd614f7492709c356

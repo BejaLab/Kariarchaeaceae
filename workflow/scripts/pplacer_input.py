@@ -3,7 +3,7 @@ from Bio import SeqIO
 from Bio.Seq import Seq
 from Bio.SeqRecord import SeqRecord
 import os
-import tempfile
+from tempfile import NamedTemporaryFile
 from io import StringIO
 from collections import defaultdict
 
@@ -12,7 +12,8 @@ blast_files  = snakemake.input['blast']
 query_file   = snakemake.input['query']
 msa_dir      = snakemake.input['msas']
 exclude_file = snakemake.input['exclude']
-output_fasta_file = snakemake.output['fasta']
+output_queries_file = snakemake.output['queries']
+output_references_file = snakemake.output['references']
 genes_file = snakemake.output['genes']
 
 genomes = snakemake.params['genomes']
@@ -74,7 +75,7 @@ with open(genes_file, 'w') as genes_file:
 
     for marker, marker_data in data.items():
         if len(marker_data) > min_genes:
-            with tempfile.NamedTemporaryFile(mode = "w") as fasta_file:
+            with NamedTemporaryFile(mode = "w") as fasta_file:
                 genomes_with_gene = set()
                 for genome, record in marker_data.items():
                     if record.id in coordinates:
@@ -93,7 +94,10 @@ with open(genes_file, 'w') as genes_file:
                 for genome in genome_set - genomes_with_gene:
                     alignment[genome] += gap
 
-with open(output_fasta_file, 'w') as file:
+with open(output_queries_file, 'w') as q_fd, open(output_references_file, 'w') as r_fd:
     for genome, seq in alignment.items():
         record = SeqRecord(Seq(seq), id = genome, description = '')
-        SeqIO.write(record, file, 'fasta')
+        if genome == query_scaffold:
+            SeqIO.write(record, q_fd, 'fasta')
+        else:
+            SeqIO.write(record, r_fd, 'fasta')

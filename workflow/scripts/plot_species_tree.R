@@ -103,4 +103,4 @@ p <- ggtree(to_treedata(tree), aes(color = !is.na(like_weight_ratio)), layout = 
     theme(legend.position = "bottom") +
     xlim(0, 2)
 
-ggsave(plot_file, p, width = 5, height = 5)
+ggsave(plot_file, p, width = 7, height = 5)
