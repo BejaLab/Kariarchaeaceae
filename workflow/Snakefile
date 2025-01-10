@@ -22,7 +22,11 @@ species_genomes = nonred_bins[nonred_bins['classification'].str.contains(species
 other_genomes = nonred_bins[~nonred_bins['classification'].str.contains(species)]['genome'].tolist()
 scaffold_to_pplace = nonred_all[~nonred_all['is_not_bin'].isna()].iloc[0]['genome']
 
+logan_sra ,= glob_wildcards("databases/logan/marine_metagenome/{sra}.contigs.fa.zst")
+
 configfile: "metadata/config.yaml"
+include: "Pangenome.snakefile"
+include: "Species_phylogeny.snakefile"
 
 rule all:
     input:
@@ -38,22 +42,6 @@ rule copy_genome:
     shell:
         "cp {input} {output}"
 
-rule prodigal:
-    input:
-        "analysis/genomes/{genome}.fna"
-    output:
-        faa = "analysis/genomes/{genome}.faa",
-        cds = "analysis/genomes/{genome}.cds",
-        gff = "analysis/genomes/{genome}.gff"
-    params:
-        proc = lambda w: 'single' if w.genome in species_genomes else 'meta'
-    shadow:
-        "minimal"
-    conda:
-        "envs/prodigal.yaml"
-    shell:
-        "prodigal -i {input} -a {output.faa} -d {output.cds} -f gff -o {output.gff} -p {params.proc}"
-
 rule faidx:
     input:
         "{prefix}"
@@ -63,154 +51,6 @@ rule faidx:
         "envs/kits.yaml"
     shell:
         "seqkit faidx {input}"
-
-rule superpang_scaffolds:
-    input:
-        txt = "analysis/pangenome/superpang/core_origin.txt",
-        fna = "analysis/genomes/{genome}.fna",
-        fai = "analysis/genomes/{genome}.fna.fai"
-    output:
-        "analysis/pangenome/genomes/{genome}.fna"
-    conda:
-        "envs/kits.yaml"
-    shell:
-        "grep ^{wildcards.genome} {input.txt} | cut -f2 | xargs seqkit faidx {input.fna} > {output}"
-
-rule prodigal_pangenome_scaffolds:
-    input:
-        "analysis/pangenome/genomes/{genome}.fna"
-    output:
-        faa = "analysis/pangenome/genomes/{genome}.faa",
-        cds = "analysis/pangenome/genomes/{genome}.cds",
-        gff = "analysis/pangenome/genomes/{genome}.gff"
-    shadow:
-        "minimal"
-    conda:
-        "envs/prodigal.yaml"
-    shell:
-        "prodigal -i {input} -a {output.faa} -d {output.cds} -f gff -o {output.gff} -p single"
-
-rule phylophlan_input:
-    input:
-        # expand("analysis/pangenome/tblastn/{genome}.faa", genome = species_genomes),
-        expand("analysis/pangenome/genomes/{genome}.faa", genome = species_genomes),
-        expand("analysis/genomes/{genome}.faa", genome = other_genomes)
-    output:
-        directory("analysis/proteins")
-    shell:
-        "mkdir {output} && cp {input} {output}/"
-
-rule phylophlan_config:
-    input:
-        "metadata/phylophlan.cfg"
-    output:
-        "analysis/proteins_phylophlan/phylophlan.cfg"
-    params:
-        model = "PROTCATAUTO",
-        trimal = "gappyout",
-        mafft = "auto",
-        evalue = 1e-10,
-        seed = 123,
-        n_boot = 1000
-    shell:
-        "MODEL={params.model} SEED={params.seed} N_BOOT={params.n_boot} TRIMAL={params.trimal} MAFFT={params.mafft} EVALUE={params.evalue} envsubst < {input} > {output}"
-
-rule phylophlan:
-    input:
-        work_dir = "analysis/proteins",
-        cfg = "analysis/proteins_phylophlan/phylophlan.cfg",
-        maas = "metadata/phylophlan.tsv"
-    output:
-        info = "analysis/proteins_phylophlan/RAxML_info.proteins.tre",
-        aln = "analysis/proteins_phylophlan/proteins_concatenated.aln",
-        msas = directory("analysis/proteins_phylophlan/tmp/msas"),
-        tree = "analysis/proteins_phylophlan/RAxML_bipartitions.proteins.tre"
-    params:
-        diversity = "low",
-        min_entries = ceil(len(species_genomes + other_genomes) * 0.6)
-    conda:
-        "envs/phylophlan.yaml"
-    threads:
-        workflow.cores
-    shell:
-        "phylophlan -i {input.work_dir} -t a -f {input.cfg} --diversity {params.diversity} --subsample full -d phylophlan --nproc {threads} --output_folder analysis --verbose --maas {input.maas} --min_num_entries {params.min_entries}"
-
-rule prottest:
-    input:
-        "analysis/pplacer/pplacer_references.fasta",
-    output:
-        "analysis/pplacer/pplacer_prottest.txt"
-    params:
-        flags = [ "-F", "-G" ],
-        models = [ "-LG", "-WAG" ]
-    conda:
-        "envs/prottest3.yaml"
-    shell:
-        "prottest3 -i {input} -o {output} {params.flags} {params.models}"
-
-rule raxml_evaluate:
-    input:
-        aln = "analysis/pplacer/pplacer_references.fasta",
-        tree = "analysis/proteins_phylophlan/RAxML_bipartitions.proteins.tre",
-        prottest = "analysis/pplacer/pplacer_prottest.txt"
-    output:
-        tree = "analysis/pplacer/RAxML_result.pplacer",
-        info = "analysis/pplacer/RAxML_info.pplacer"
-    params:
-        suffix = "pplacer"
-    conda:
-        "envs/phylophlan.yaml"
-    shell:
-        """
-        model=$(grep -m1 '^Best model according to BIC' {input.prottest} | cut -f6 -d" " | sed -e 's/+G//' -e 's/+F/F/')
-        out_dir=$(realpath $(dirname {output.tree}))
-        raxmlHPC-PTHREADS-SSE3 -f e -t {input.tree} -s {input.aln} -m "PROTGAMMA${{model}}" -n {params.suffix} -w "$out_dir"
-        """
-
-rule superpang:
-    input:
-        fasta = expand("genomes/{genome}.fna", genome = species_genomes),
-        checkm = "analysis/checkm.txt"
-    output:
-        expand("analysis/pangenome/superpang/{file}", file = [ "assembly.fasta", "assembly.info.tsv" ]),
-        expand("analysis/pangenome/superpang/{file}", file = [ "graph.fastg", "graph.NBP2origins.csv" ]),
-        expand("analysis/pangenome/superpang/{file}", file = [ "NBP2origins.tsv", "NBPs.accessory.fasta", "NBPs.core.fasta", "NBPs.fasta" ])
-    log:
-        "analysis/pangenome/superpang.log"
-    params:
-        ident = 0.8,
-        k = 101,
-        gap = 10
-    conda:
-        "envs/superpang.yaml"
-    threads:
-        20
-    shell:
-        "SuperPang.py -f {input.fasta} -q {input.checkm} -o $(dirname {output[0]}) -t {threads} -k {params.k} -i {params.ident} -b {params.ident} --gap-size {params.gap} --force-overwrite &> {log}"
-
-rule taxit:
-    input:
-        tree = "analysis/pplacer/RAxML_result.pplacer",
-        info = "analysis/pplacer/RAxML_info.pplacer",
-        aln = "analysis/pplacer/pplacer_references.fasta"
-    output:
-        directory("analysis/pplacer/RAxML.refpkg")
-    conda:
-        "envs/pplacer.yaml"
-    shell:
-        "taxit create -l locus_tag -P {output} --tree-file {input.tree} --aln-fasta {input.aln} --tree-stats {input.info}"
-
-rule pplacer:
-    input:
-        refpkg = "analysis/pplacer/RAxML.refpkg",
-        references = "analysis/pplacer/pplacer_references.fasta",
-        queries = "analysis/pplacer/pplacer_queries.fasta"
-    output:
-        "analysis/pplacer/pplacer.jplace"
-    conda:
-        "envs/pplacer.yaml"
-    shell:
-        "pplacer -o {output} -c {input.refpkg} -r {input.references} {input.queries}"
 
 rule makeblast_prot:
     input:
@@ -231,75 +71,6 @@ rule makeblast_nucl:
         "envs/blast.yaml"
     shell:
         "makeblastdb -in {input} -dbtype nucl"
-
-rule blastp:
-    input:
-        query = "analysis/genomes/{scaffold}.faa".format(scaffold = scaffold_to_pplace),
-        db = "analysis/genomes/{genome}.faa",
-        pdb = "analysis/genomes/{genome}.faa.pdb"
-    output:
-        "analysis/pplacer/blastp/{genome}.txt"
-    conda:
-        "envs/blast.yaml"
-    shell:
-        "blastp -query {input.query} -db {input.db} -outfmt 6 -out {output}"
-
-rule pplacer_input:
-    input:
-        fasta = expand("analysis/genomes/{genome}.faa", genome = species_genomes + other_genomes),
-        blast = expand("analysis/pplacer/blastp/{genome}.txt", genome = species_genomes + other_genomes),
-        query = "analysis/genomes/{scaffold}.faa".format(scaffold = scaffold_to_pplace),
-        msas = "analysis/proteins_phylophlan/tmp/msas",
-        exclude = "analysis/blastp/all_genomes-HeimdallR.txt"
-    output:
-        queries = "analysis/pplacer/pplacer_queries.fasta",
-        references = "analysis/pplacer/pplacer_references.fasta",
-        genes = "analysis/pplacer/pplacer_input.txt"
-    params:
-        genomes = species_genomes + other_genomes,
-        scaffold = scaffold_to_pplace,
-        evalue = 1e-15,
-        min_genes = 3
-    conda:
-        "envs/biopython.yaml"
-    script:
-        "scripts/pplacer_input.py"
-
-rule gappa:
-    input:
-        "analysis/pplacer/pplacer.jplace"
-    output:
-        "analysis/pplacer/pplacer.newick"
-    conda:
-        "envs/gappa.yaml"
-    shell:
-        "gappa examine graft --jplace-path {input} --out-dir $(dirname {output})"
-
-rule transfer_supports:
-    input:
-        "analysis/proteins_phylophlan/RAxML_bipartitions.proteins.tre",
-        "analysis/pplacer/pplacer.newick"
-    output:
-        "analysis/pplacer/pplacer_with_supports.newick"
-    conda:
-        "envs/dendropy.yaml"
-    script:
-        "scripts/transfer_supports.py"
-
-rule plot_species_tree:
-    input:
-        jplace = "analysis/pplacer/pplacer.jplace",
-        newick = "analysis/pplacer/pplacer_with_supports.newick",
-        metadata = "metadata/genomes.xlsx",
-        genes = "analysis/pplacer/pplacer_input.txt"
-    output:
-        "output/species.svg"
-    params:
-        genomes = species_genomes
-    conda:
-        "envs/r.yaml"
-    script:
-        "scripts/plot_species_tree.R"
 
 rule rhodopsins_cat:
     input:
@@ -375,127 +146,6 @@ rule rhodopsins_plot:
         "envs/r.yaml"
     script:
         "scripts/plot_protein_tree.R"
-
-rule superpang_core_origin:
-    input:
-        info = "analysis/pangenome/superpang/assembly.info.tsv",
-        origins = "analysis/pangenome/superpang/NBP2origins.tsv"
-    output:
-        "analysis/pangenome/superpang/core_origin.txt"
-    conda:
-        "envs/pandas.yaml"
-    script:
-        "scripts/core_origin.py"
-
-rule superpang_core_fasta:
-    input:
-        info = "analysis/pangenome/superpang/assembly.info.tsv",
-        fasta = "analysis/pangenome/superpang/assembly.fasta"
-    output:
-        "analysis/pangenome/superpang/assembly.core.fna"
-    conda:
-        "envs/kits.yaml"
-    shell:
-        "csvgrep -t -c regions -m core {input.info} | csvcut -c id | sed 1d | seqkit grep -f- {input.fasta} -o {output}"
-
-rule superpang_makeblastdb:
-    input:
-        "analysis/pangenome/superpang/assembly.core.fna"
-    output:
-        "analysis/pangenome/superpang/assembly.core.fna.ndb"
-    conda:
-        "envs/blast.yaml"
-    shell:
-        "makeblastdb -in {input} -dbtype nucl"
-
-rule copy_assembly_core:
-    input:
-        "analysis/pangenome/superpang/assembly.core.fna"
-    output:
-        "analysis/pangenome/pgap/superpang.fna"
-    shell:
-        "cp {input} {output}"
-
-rule copy_submol:
-    input:
-        "metadata/pgap.yaml"
-    output:
-        "analysis/pangenome/pgap/{genome}_submol.yaml"
-    shell:
-        "cp {input} {output}"
-
-rule make_yaml:
-    input:
-        fasta  = "analysis/pangenome/pgap/{genome}.fna",
-        submol = "analysis/pangenome/pgap/{genome}_submol.yaml"
-    output:
-        "analysis/pangenome/pgap/{genome}.yaml"
-    wildcard_constraints:
-        genome = '.*(?<!_submol)'
-    run:
-        sets = dict(
-            fasta  = { "class": "File", "location": path.basename(input.fasta)  },
-            submol = { "class": "File", "location": path.basename(input.submol) }
-        )
-        with open(output[0], 'w') as fd:
-            yaml.dump(sets, fd)
-
-rule pgap:
-    input:
-        yaml = "analysis/pangenome/pgap/{genome}.yaml",
-        submol = "analysis/pangenome/pgap/{genome}_submol.yaml"
-    output:
-        gbk = "analysis/pangenome/pgap/{genome}/annot.gbk"
-    params:
-        dirname = directory("analysis/pangenome/pgap/{genome}/")
-    threads:
-        8
-    shell:
-        """
-        rm -fr {params.dirname}
-        pgap.py --no-internet --no-self-update --debug --ignore-all-errors --report-usage-true --cpu {threads} -o {params.dirname} {input.yaml}
-        """
-
-rule checkm_dload:
-    output:
-        directory("analysis/checkm_database")
-    params:
-        url = "https://data.ace.uq.edu.au/public/CheckM_databases/checkm_data_2015_01_16.tar.gz"
-    shell:
-        "mkdir -p {output} && wget -O- {params.url} | tar xvz -C {output}"
-
-rule checkm_genomes:
-    input:
-        data = "analysis/checkm_database",
-        fasta = expand("analysis/genomes/{genome}.fna", genome = species_genomes + other_genomes)
-    output:
-        dir = directory("analysis/checkm"),
-        txt = "analysis/checkm.txt"
-    params:
-        domain = "Archaea"
-    conda:
-        "envs/checkm.yaml"
-    shadow:
-        "minimal"
-    threads:
-        10
-    shell:
-        "CHECKM_DATA_PATH={input.data} checkm taxonomy_wf domain {params.domain} $(dirname {input.fasta[0]}) {output.dir} -f {output.txt} -t {threads}"
-
-rule checkm_pangenome:
-    input:
-        data = "analysis/checkm_database",
-        fasta = "analysis/pangenome/superpang/assembly.core.fna"
-    output:
-        directory("analysis/pangenome/checkm")
-    params:
-        domain = "Archaea"
-    conda:
-        "envs/checkm.yaml"
-    threads:
-        20
-    shell:
-        "CHECKM_DATA_PATH={input.data} checkm taxonomy_wf domain {params.domain} $(dirname {input.fasta}) {output} -t {threads}"
 
 # not available from conda
 rule splitstree_run:
@@ -847,7 +497,7 @@ rule plot_map_pfam:
         clade = "HeimdallR",
         total_clade = "Bac_rhodopsin",
         max_depth = 200,
-        size_breaks = [ 0.0001, 0.001, 0.01, 0.1, 0.5, 1, 10 ]
+        size_breaks = [ 0.05, 0.1, 0.2, 0.4 ]
     conda:
         "envs/r-map.yaml"
     script:
@@ -1241,3 +891,23 @@ rule pfam_csv:
         "envs/bioformats.yaml"
     script:
         "scripts/hmmsearch_to_csv.py"
+
+rule fasta_dict:
+    input:
+        "{prefix}.fna"
+    output:
+        "{prefix}.dict"
+    conda:
+        "envs/gatk.yaml"
+    shell:
+        "gatk CreateSequenceDictionary -R {input} -O {output}"
+
+rule bam_index:
+    input:
+        "{prefix}.bam"
+    output:
+        "{prefix}.bam.bai"
+    conda:
+        "envs/samtools.yaml"
+    shell:
+        "samtools index {input}"
