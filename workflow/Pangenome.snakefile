@@ -115,7 +115,8 @@ rule pgap:
         yaml = "analysis/pangenome/pgap/{genome}.yaml",
         submol = "analysis/pangenome/pgap/{genome}_submol.yaml"
     output:
-        gbk = "analysis/pangenome/pgap/{genome}/annot.gbk"
+        gbk = "analysis/pangenome/pgap/{genome}/annot.gbk",
+        gff = "analysis/pangenome/pgap/{genome}/annot.gff"
     params:
         dirname = directory("analysis/pangenome/pgap/{genome}/")
     threads:
@@ -170,59 +171,85 @@ rule map_logan:
         contigs = "databases/logan/marine_metagenome/{sra}.contigs.fa.zst"
     output:
         "analysis/pangenome/logan/minimap2/{sra}.bam"
-    params:
-        SM = "LOGAN"
     conda:
         "envs/minimap2.yaml"
     threads:
         3
     shell:
-        "zstd -fcd {input.contigs} | minimap2 {input.index} - --sam-hit-only -a -t {threads} | samtools addreplacerg -r ID:{wildcards.sra} -r SM:{params.SM} - | samtools sort -o {output} -@{threads}"
+        "zstd -fcd {input.contigs} | minimap2 {input.index} - --sam-hit-only -a -t {threads} | samtools addreplacerg -r ID:{wildcards.sra} -o {output} -"
 
-rule merge_logan:
+rule merge_bam_logan_all:
     input:
         expand("analysis/pangenome/logan/minimap2/{sra}.bam", sra = logan_sra)
     output:
-        "analysis/pangenome/logan/merge.bam"
+        "analysis/pangenome/logan/merge_all_renamed.bam"
     params:
-        min_cov = 1000
+        quals = 'j',
+        sort = True,
+        trim = '_length=\\d+',
+        platform = 'ILLUMINA',
+        sample = 'LOGAN'
     conda:
         "envs/pysam.yaml"
     script:
-        "scripts/bam_merge.py"
+        "scripts/merge_bam.py"
+
+rule merge_bam_logan:
+    input:
+        expand("analysis/pangenome/logan/minimap2/{sra}.bam", sra = logan_sra_mg)
+    output:
+        "analysis/pangenome/logan/merge_renamed.bam"
+    params:
+        quals = 'j',
+        sort = True,
+        trim = '_length=\\d+',
+        platform = 'ILLUMINA',
+        sample = 'LOGAN_MG'
+    conda:
+        "envs/pysam.yaml"
+    script:
+        "scripts/merge_bam.py"
 
 rule rename_fasta:
     input:
         "analysis/pangenome/superpang/assembly.core.fna"
     output:
         "analysis/pangenome/superpang/assembly.core_renamed.fna"
-    shell:
-        "sed s/length=/length_/ < {input} > {output}"
-
-#rule rename_bam:
-#    input:
-#        "analysis/pangenome/logan/merge.bam"
-#    output:
-#        "analysis/pangenome/logan/merge_renamed.bam"
-#    conda:
-#        "envs/samtools.yaml"
-#    shell:
-#        "samtools view -h {input} | sed s/length=/length_/ | samtools view -b -o {output}"
-
-rule freebayes:
-    input:
-        fasta = "analysis/pangenome/superpang/assembly.core.fna",
-        bam = "analysis/pangenome/logan/merge.bam"
-    output:
-        "analysis/pangenome/logan/freebayes.vcf"
     params:
-        skip_cov = 1000,
-        F = 0.05,
-        G = 2
+        trim = '_length=\\d+'
     conda:
-        "envs/freebayes.yaml"
+        "envs/kits.yaml"
     shell:
-        "freebayes --skip-coverage {params.skip_cov} --pooled-continuous -F {params.F} -G {params.G} -p 1 -f {input.fasta} {input.bam} > {output}"
+        "seqkit replace -p '{params.trim}' -o {output} {input}"
+
+rule metagenomic_coverage:
+    input:
+        fasta = "analysis/pangenome/superpang/assembly.core_renamed.fna",
+        fai = "analysis/pangenome/superpang/assembly.core_renamed.fna.fai",
+        dict = "analysis/pangenome/superpang/assembly.core_renamed.dict",
+        bam = "analysis/pangenome/logan/merge_renamed.bam",
+        bai = "analysis/pangenome/logan/merge_renamed.bam.bai",
+        bed = "analysis/pangenome/superpang/assembly.core_renamed.fna.fai.bed"
+    output:
+        "analysis/pangenome/logan/depth_of_coverage.csv"
+    conda:
+        "envs/gatk.yaml"
+    shell:
+        "gatk DepthOfCoverage -R {input.fasta} -I {input.bam} -L {input.bed} -O {output}"
+
+rule call_variants_all:
+    input:
+        fasta = "analysis/pangenome/superpang/assembly.core_renamed.fna",
+        fai = "analysis/pangenome/superpang/assembly.core_renamed.fna.fai",
+        dict = "analysis/pangenome/superpang/assembly.core_renamed.dict",
+        bam = "analysis/pangenome/logan/merge_all_renamed.bam",
+        bai = "analysis/pangenome/logan/merge_all_renamed.bam.bai"
+    output:
+        "analysis/pangenome/logan/mutect2_all.vcf.gz"
+    conda:
+        "envs/gatk.yaml"
+    shell:
+        "gatk Mutect2 -R {input.fasta} -I {input.bam} -O {output}"
 
 rule call_variants:
     input:
@@ -238,135 +265,49 @@ rule call_variants:
     shell:
         "gatk Mutect2 -R {input.fasta} -I {input.bam} -O {output}"
 
-rule cactus_seqfile:
+rule filter_variants_all:
     input:
-        pangenome = "analysis/pangenome/superpang/assembly.core.fna",
-        genomes = expand("genomes/{genome}.fna", genome = species_genomes)
+        vcf = "analysis/pangenome/logan/mutect2_all.vcf.gz",
+        fasta = "analysis/pangenome/superpang/assembly.core_renamed.fna",
+        fai = "analysis/pangenome/superpang/assembly.core_renamed.fna.fai",
+        dict = "analysis/pangenome/superpang/assembly.core_renamed.dict"
     output:
-        "analysis/pangenome/cactus/genomes.txt"
+        "analysis/pangenome/logan/mutect2_all_filtered.vcf.gz"
+    conda:
+        "envs/gatk.yaml"
+    shell:
+        "gatk FilterMutectCalls -V {input.vcf} -R {input.fasta} -O {output}"
+
+rule filter_variants:
+    input:
+        vcf = "analysis/pangenome/logan/mutect2.vcf.gz",
+        fasta = "analysis/pangenome/superpang/assembly.core_renamed.fna",
+        fai = "analysis/pangenome/superpang/assembly.core_renamed.fna.fai",
+        dict = "analysis/pangenome/superpang/assembly.core_renamed.dict"
+    output:
+        "analysis/pangenome/logan/mutect2_filtered.vcf.gz"
+    conda:
+        "envs/gatk.yaml"
+    shell:
+        "gatk FilterMutectCalls -V {input.vcf} -R {input.fasta} -O {output}"
+
+rule plot_variation:
+    input:
+        vcf = "analysis/pangenome/logan/mutect2_filtered.vcf.gz",
+        cov = "analysis/pangenome/logan/depth_of_coverage.csv",
+        gff = "analysis/pangenome/pgap/superpang/annot.gff"
+    output:
+        scaffold = "output/scaffold.svg",
+        genome = "output/genome.svg"
     params:
-        genome_names = species_genomes
-    run:
-        with open(str(output), 'w') as file:
-            file.write(f"pangenome\t{input.pangenome}\n")
-            for i, genome in enumerate(params.genome_names):
-                file.write(f"{genome}\t{input.genomes[i]}\n")
-
-rule cactus_minigraph:
-    input:
-        pangenome = "analysis/pangenome/superpang/assembly.core.fna",
-        genomes = expand("genomes/{genome}.fna", genome = species_genomes),
-        txt = "analysis/pangenome/cactus/genomes.txt"
-    output:
-        gfa = "analysis/pangenome/cactus/minigraph.gfa",
-        job = directory("analysis/pangenome/cactus/minigraph_job")
-    log:
-        "analysis/pangenome/cactus/minigraph.log"
+        min_scaf_len = 20000,
+        min_cds_len = 100 * 3,
+        max_var_width = 9,
+        target = "000140",
+        win_size = 200,
+        discard_dep_percentile = 0.99,
+        filter_out = 'map_qual|base_qual|contamination|weak_evidence|low_allele_frac|normal_artifact|panel_of_normals'
     conda:
-        "envs/cactus.yaml"
-    threads:
-        20
-    shell:
-        "cactus-minigraph {output.job} {input.txt} {output.gfa} --reference pangenome --mgCores {threads} --clean never &> {log}"
-
-rule cactus_graphmap:
-    input:
-        pangenome = "analysis/pangenome/superpang/assembly.core.fna",
-        genomes = expand("genomes/{genome}.fna", genome = species_genomes),
-        txt = "analysis/pangenome/cactus/genomes.txt",
-        gfa = "analysis/pangenome/cactus/minigraph.gfa"
-    output:
-        job = directory("analysis/pangenome/cactus/graphmap_job"),
-        txt = "analysis/pangenome/cactus/graphmap.txt",
-        paf = "analysis/pangenome/cactus/graphmap.paf",
-        fasta = "analysis/pangenome/cactus/graphmap.fasta"
-    log:
-        "analysis/pangenome/cactus/graphmap.log"
-    conda:
-        "envs/cactus.yaml"
-    threads:
-        20
-    shell:
-        "cp {input.txt} {output.txt} && cactus-graphmap {output.job} {output.txt} {input.gfa} {output.paf} --reference pangenome --mapCores {threads} --outputFasta {output.fasta} --clean never &> {log}"
-
-rule cactus_align:
-    input:
-        pangenome = "analysis/pangenome/superpang/assembly.core.fna",
-        genomes = expand("genomes/{genome}.fna", genome = species_genomes),
-        txt = "analysis/pangenome/cactus/graphmap.txt",
-        paf = "analysis/pangenome/cactus/graphmap.paf",
-        fasta = "analysis/pangenome/cactus/graphmap.fasta"
-    output:
-        job = directory("analysis/pangenome/cactus/align_job"),
-        hal = "analysis/pangenome/cactus/cactus.hal",
-        vg = "analysis/pangenome/cactus/cactus.vg"
-    log:
-        "analysis/pangenome/cactus/align.log"
-    conda:
-        "envs/cactus.yaml"
-    threads:
-        20
-    shell:
-        "cactus-align {output.job} {input.txt} {input.paf} {output.hal} --reference pangenome --pangenome --outVG --clean never &> {log}"
-
-rule cactus_graphmap_join:
-    input:
-        pangenome = "analysis/pangenome/superpang/assembly.core.fna",
-        genomes = expand("genomes/{genome}.fna", genome = species_genomes),
-        txt = "analysis/pangenome/cactus/graphmap.txt",
-        vg = "analysis/pangenome/cactus/cactus.vg"
-    output:
-        job = directory("analysis/pangenome/cactus/graphmap_join_job"),
-        gfa = "analysis/pangenome/cactus/cactus.gfa.gz",
-        stats = "analysis/pangenome/cactus/cactus.stats.tgz",
-        odgi = "analysis/pangenome/cactus/cactus.full.og"
-    log:
-        "analysis/pangenome/cactus/graphmap_join.log"
-    conda:
-        "envs/cactus.yaml"
-    threads:
-        20
-    shell:
-        "cactus-graphmap-join {output.job} --vg {input.vg} --outDir $(dirname {output.gfa}) --outName cactus --reference pangenome --maxCores {threads} --odgi --clean never &> {log}"
-
-rule hal2maf:
-    input:
-        "analysis/pangenome/cactus/cactus.hal"
-    output:
-        job = directory("analysis/pangenome/cactus/hal2maf"),
-        maf = "analysis/pangenome/cactus/cactus.maf"
-    log:
-        "analysis/pangenome/cactus/hal2maf.log"
-    threads:
-        4
-    conda:
-        "envs/cactus.yaml"
-    shell:
-        "cactus-hal2maf {output.job} {input} {output.maf} --dupeMode single --refGenome pangenome --chunkSize 100000000 --noAncestors --batchCores {threads} --clean never &> {log}"
-
-rule maf_to_fasta:
-    input:
-        "analysis/pangenome/cactus/cactus.maf"
-    output:
-        fasta = "analysis/pangenome/cactus/cactus.fasta",
-        bed = "analysis/pangenome/cactus/cactus.fasta.bed"
-    params:
-        genomes = species_genomes + [ 'pangenome' ]
-    conda:
-        "envs/biopython.yaml"
+        "envs/r-plot_variation.yaml"
     script:
-        "scripts/maf_to_fasta.py"
-
-rule window_clusters:
-    input:
-        "analysis/pangenome/cactus/cactus.fasta"
-    output:
-        "analysis/pangenome/cactus/cactus.fasta.clust"
-    params:
-        max_gaps = 0.5,
-        dist_threshold = 0.05,
-        window = 1000
-    conda:
-        "envs/biopython.yaml"
-    script:
-        "scripts/window_clusters.py"
+        "scripts/plot_variation.R"
