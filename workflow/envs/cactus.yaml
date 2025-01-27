@@ -1,7 +1,0 @@
-dependencies:
- - python=3.12
- - pip
- - pip:
-   - git+https://github.com/ComparativeGenomicsToolkit/cactus@v2.9.3
-   - backports.zoneinfo[tzdata];python_version<"3.9"
-   - toil[aws]==7.0.0

@@ -204,7 +204,7 @@ rule merge_bam_logan:
         sort = True,
         trim = '_length=\\d+',
         platform = 'ILLUMINA',
-        sample = 'LOGAN_MG'
+        sample = 'LOGAN'
     conda:
         "envs/pysam.yaml"
     script:
@@ -286,23 +286,39 @@ rule filter_variants:
         dict = "analysis/pangenome/superpang/assembly.core_renamed.dict"
     output:
         "analysis/pangenome/logan/mutect2_filtered.vcf.gz"
+    params:
+        min_fract = 0.05
     conda:
         "envs/gatk.yaml"
     shell:
-        "gatk FilterMutectCalls -V {input.vcf} -R {input.fasta} -O {output}"
+        "gatk FilterMutectCalls -V {input.vcf} -R {input.fasta} -O {output} --min-allele-fraction {params.min_fract}"
+
+rule vfc_to_bed:
+    input:
+        "analysis/pangenome/logan/mutect2_filtered.vcf.gz"
+    output:
+        "analysis/pangenome/logan/mutect2_filtered.bed"
+    params:
+        filter_out = 'map_qual|base_qual|contamination|weak_evidence|low_allele_frac|normal_artifact|panel_of_normals',
+        max_var_width = 9
+    conda:
+        "envs/bedtools.yaml"
+    shell:
+        "gzip -cd {input} | awk 'length($4)<={params.max_var_width}&&$7!~/{params.filter_out}/' | bedtools merge > {output}"
 
 rule plot_variation:
     input:
-        vcf = "analysis/pangenome/logan/mutect2_filtered.vcf.gz",
+        bed = "analysis/pangenome/logan/mutect2_filtered.bed",
         cov = "analysis/pangenome/logan/depth_of_coverage.csv",
         gff = "analysis/pangenome/pgap/superpang/annot.gff"
     output:
         scaffold = "output/scaffold.svg",
-        genome = "output/genome.svg"
+        genome = "output/genome.svg",
+        scaffold_csv = "output/scaffold.csv",
+        genome_csv = "output/genome.csv"
     params:
         min_scaf_len = 20000,
         min_cds_len = 100 * 3,
-        max_var_width = 9,
         target = "000140",
         win_size = 200,
         discard_dep_percentile = 0.99,

@@ -21,10 +21,9 @@ all_genomes = nonred_all['genome'].tolist()
 species_genomes = nonred_bins[nonred_bins['classification'].str.contains(species)]['genome'].tolist()
 other_genomes = nonred_bins[~nonred_bins['classification'].str.contains(species)]['genome'].tolist()
 scaffold_to_pplace = nonred_all[~nonred_all['is_not_bin'].isna()].iloc[0]['genome']
-
 logan_sra ,= glob_wildcards("databases/logan/marine_metagenome/{sra}.contigs.fa.zst")
 logan_metadata = read_csv("databases/logan/marine_metagenome.csv")
-logan_sra_mg = logan_metadata.query("LibraryStrategy == 'WGS' and LibrarySource == 'METAGENOMIC' and LibrarySelection == 'RANDOM' and Run in @logan_sra")['Run'].to_list()
+logan_sra_mg = logan_metadata.query("LibraryStrategy == 'WGS' and LibrarySource == 'METAGENOMIC' and LibrarySelection == 'RANDOM' and Run in @logan_sra")['Run'].unique().tolist()
 
 configfile: "metadata/config.yaml"
 include: "Pangenome.snakefile"
