@@ -1,5 +1,6 @@
+import sqlite3
 from os import listdir, path
-from pandas import read_excel, read_csv
+from pandas import read_excel, read_csv, read_sql_query
 import yaml
 import warnings
 from math import ceil
@@ -21,9 +22,12 @@ all_genomes = nonred_all['genome'].tolist()
 species_genomes = nonred_bins[nonred_bins['classification'].str.contains(species)]['genome'].tolist()
 other_genomes = nonred_bins[~nonred_bins['classification'].str.contains(species)]['genome'].tolist()
 scaffold_to_pplace = nonred_all[~nonred_all['is_not_bin'].isna()].iloc[0]['genome']
-logan_sra ,= glob_wildcards("databases/logan/marine_metagenome/{sra}.contigs.fa.zst")
-logan_metadata = read_csv("databases/logan/marine_metagenome.csv")
-logan_sra_mg = logan_metadata.query("LibraryStrategy == 'WGS' and LibrarySource == 'METAGENOMIC' and LibrarySelection == 'RANDOM' and Run in @logan_sra")['Run'].unique().tolist()
+
+logan_cnn = sqlite3.connect('databases/logan/metadata.sq3')
+with open('workflow/resources/logan_marine.sql') as file:
+    logan_query = file.read()
+logan_all = read_sql_query(logan_query, logan_cnn).set_index('accession')
+logan_mg = logan_all.query("is_transcriptome == 0")
 
 configfile: "metadata/config.yaml"
 include: "Pangenome.snakefile"

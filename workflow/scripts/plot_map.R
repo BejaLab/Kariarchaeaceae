@@ -8,14 +8,13 @@ library(ggrepel)
 library(scatterpie)
 library(ggforce)
 library(tools)
-library(rgdal)
+library(sf)
 library(grid)
 library(ggstar)
 library(ggnewscale)
 
 with(snakemake@input, {
-    genomes_file <<- genomes # "metadata/genomes.xlsx"
-    shape_file <<- shape # "analysis/maps/land/ne_110m_land.shp"
+    shape_dir <<- shape # "analysis/maps/land/ne_110m_land.shp"
     jgi_img_profiles_files <<- jgi_img_profiles # "analysis/profiles/JGI_IMG_unrestricted_profiles.csv"
     jgi_img_matches_files  <<- jgi_img_matches # "analysis/profiles/JGI_IMG_unrestricted_matches.csv"
     jgi_img_samples_files  <<- jgi_img_samples # "analysis/profiles/JGI_IMG_unrestricted_samples.csv"
@@ -74,10 +73,6 @@ all_profiles <- bind_rows(list(om_rgc = om_rgc, jgi_img = jgi_img), .id = "Sourc
     summarize(target_pct = pct_value(value, clade, target_clade, total_clade), .groups = "drop") # ratio is the abundance of the target_clade relative to all the other clades
 write.csv(all_profiles, row.names = F, file = all_profiles_file)
 
-genomes <- read_excel(genomes_file) %>%
-    filter(!is.na(rhodopsin), is.na(redundant)) %>%
-    mutate(rhodopsin = gsub("[*]", "", rhodopsin))
-
 get_repel_coords <- function(.data, map_g, width, height, ...) {
     grid.newpage()
     Total <- 1
@@ -86,15 +81,14 @@ get_repel_coords <- function(.data, map_g, width, height, ...) {
         geom_point(aes(x, y), data = .data) +
         geom_text_repel(aes(x, y), data = .data, max.overlaps = Inf, ...)
     panel_params <- ggplot_build(g)$layout$panel_params[[1]]
-    xrg <- panel_params$x.range
-    yrg <- panel_params$y.range
+    xrg <- panel_params$x_range
+    yrg <- panel_params$y_range
 
     textrepeltree <- ggplotGrob(g) %>%
         grid.force(draw = F) %>%
         getGrob("textrepeltree", grep = T)
     children <- childNames(textrepeltree) %>%
         grep("textrepelgrob", ., value = T)
-
     get_xy <- function(n) {
         grob <- getGrob(textrepeltree, n)
         data.frame(
@@ -107,36 +101,28 @@ get_repel_coords <- function(.data, map_g, width, height, ...) {
         cbind(.data) %>%
         mutate(theta = atan2(y - y.repel, x - x.repel), x.segm = x.repel + Total * cos(theta), y.segm = y.repel + Total * sin(theta))
 }
-my_ggplot_world <- function(shape_file, xlim = c(-185, 185), ylim = c(-85, 90)) {
-    map_base <- file_path_sans_ext(shape_file)
-    world.land <- readOGR(dirname(shape_file), basename(file_path_sans_ext(shape_file)))
-    continents.simple <- fortify(world.land)
-    all.continents <- data_frame(id = unique(as.character(continents.simple$id)))
-    ggplot(all.continents) +
-        geom_map(data = continents.simple, map = continents.simple, aes(map_id = id), color = "lightgray", fill = "lightgray") +
-        coord_quickmap(xlim = xlim, ylim = ylim, expand = F) +
-        scale_x_continuous(breaks = c(-180, -120, -60, 0, 60, 120, 180)) +
-        scale_y_continuous(breaks = c(-90, -60, -30, 0, 30, 60, 90))
+my_ggplot_world <- function(shape_dir) {
+    world.land <- st_read(shape_dir)
+    ggplot() +
+        geom_sf(data = world.land, color = NA, fill = "lightgray") +
+        coord_sf(expand = F) +
+        scale_x_continuous(breaks = seq(-180, 180, 60)) +
+        scale_y_continuous(breaks = seq(-90, 90, 30))
 }
-
-xlim <- c(-185, 185)
-ylim <- c(-85, 90)
-
-g <- my_ggplot_world(shape_file, xlim, ylim)
 
 width <- 16
 height <- 8
 
+g <- my_ggplot_world(shape_dir)
+
 profile_data <- rename(all_profiles, x = Longitude, y = Latitude) %>%
-    filter(!is.na(x), !is.na(y), x >= xlim[1], x <= xlim[2], y >= ylim[1], y <= ylim[2])
+    filter(!is.na(x), !is.na(y)) # , x >= xlim[1], x <= xlim[2], y >= ylim[1], y <= ylim[2])
 profile_data_non_zero <- filter(profile_data, target_pct > 0) %>%
     get_repel_coords(g, width, height, label = "o", size = 0.5, force_pull = 20)
 profile_data_zero <- group_by(profile_data, Source, Sequencing.Strategy, x, y) %>%
     filter(all(target_pct == 0)) %>%
     summarize(.groups = "drop") %>%
     get_repel_coords(g, width, height, label = "o", size = 0.5, force_pull = 20)
-
-genome_data <- filter(genomes, lon >= xlim[1], lon <= xlim[2], lat >= ylim[1], lat <= ylim[2])
 
 colors <- list(
     Metagenome = "#0c3d8aff",
@@ -155,12 +141,6 @@ shapes_zero <- c(
     jgi_img = 4
 )
 p <- g +
-    geom_star(aes(x = lon, y = lat, color = rhodopsin, size = 2 - is.na(rhodopsin)), starshape = 1, starstroke = 1.5, data = genome_data) +
-    scale_size(range = c(3, 5)) +
-    new_scale("shape") + new_scale("color") + new_scale("fill") + new_scale("size") +
-    geom_text_repel(aes(x = lon, y = lat, label = name, color = is.na(rhodopsin)), data = genome_data, max.overlaps = Inf, min.segment.length = 0, point.size = 5, max.iter = Inf, force = 20, force_pull = 50) +
-    scale_color_manual(values = list("TRUE" = "darkgray", "FALSE" = colors$Metagenome)) +
-    new_scale("color") + new_scale("size") +
 
     geom_point(aes(x = x.repel, y = y.repel, color = Sequencing.Strategy, shape = Source), size = 1.5, stroke = 0.5, data = profile_data_zero) +
     scale_shape_manual(values = shapes_zero) +

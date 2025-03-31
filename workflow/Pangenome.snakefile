@@ -168,21 +168,35 @@ rule minimap2_index:
 rule map_logan:
     input:
         index = "analysis/pangenome/superpang/assembly.core.fna.mmi",
-        contigs = "databases/logan/marine_metagenome/{sra}.contigs.fa.zst"
+        contigs = "databases/logan/contigs/{sra}.contigs.fa.zst"
     output:
         "analysis/pangenome/logan/minimap2/{sra}.bam"
+    wildcard_constraints:
+        sra = '[A-Z0-9]+'
     conda:
         "envs/minimap2.yaml"
     threads:
         3
     shell:
-        "zstd -fcd {input.contigs} | minimap2 {input.index} - --sam-hit-only -a -t {threads} | samtools addreplacerg -r ID:{wildcards.sra} -o {output} -"
+        "zstd -fcd {input.contigs} | minimap2 {input.index} - --sam-hit-only -a -t {threads} | samtools addreplacerg -r ID:{wildcards.sra} - | samtools sort -o {output}"
+
+rule filter_bam:
+    input:
+        "analysis/pangenome/logan/minimap2/{sra}.bam"
+    output:
+        "analysis/pangenome/logan/minimap2/{sra}_filt.bam"
+    params:
+        max_id = 0.2
+    conda:
+        "envs/bedtools.yaml"
+    shell:
+        "samtools view -b -e '[de]<{params.max_id}' {input} > {output}"
 
 rule merge_bam_logan_all:
     input:
-        expand("analysis/pangenome/logan/minimap2/{sra}.bam", sra = logan_sra)
+        expand("analysis/pangenome/logan/minimap2/{sra}_filt.bam", sra = logan_all.index)
     output:
-        "analysis/pangenome/logan/merge_all_renamed.bam"
+        "analysis/pangenome/logan/merged_all.bam"
     params:
         quals = 'j',
         sort = True,
@@ -196,9 +210,9 @@ rule merge_bam_logan_all:
 
 rule merge_bam_logan:
     input:
-        expand("analysis/pangenome/logan/minimap2/{sra}.bam", sra = logan_sra_mg)
+        expand("analysis/pangenome/logan/minimap2/{sra}_filt.bam", sra = logan_mg.index)
     output:
-        "analysis/pangenome/logan/merge_renamed.bam"
+        "analysis/pangenome/logan/merged_mg.bam"
     params:
         quals = 'j',
         sort = True,
@@ -227,8 +241,8 @@ rule metagenomic_coverage:
         fasta = "analysis/pangenome/superpang/assembly.core_renamed.fna",
         fai = "analysis/pangenome/superpang/assembly.core_renamed.fna.fai",
         dict = "analysis/pangenome/superpang/assembly.core_renamed.dict",
-        bam = "analysis/pangenome/logan/merge_renamed.bam",
-        bai = "analysis/pangenome/logan/merge_renamed.bam.bai",
+        bam = "analysis/pangenome/logan/merged_mg.bam",
+        bai = "analysis/pangenome/logan/merged_mg.bam.bai",
         bed = "analysis/pangenome/superpang/assembly.core_renamed.fna.fai.bed"
     output:
         "analysis/pangenome/logan/depth_of_coverage.csv"
@@ -242,8 +256,8 @@ rule call_variants_all:
         fasta = "analysis/pangenome/superpang/assembly.core_renamed.fna",
         fai = "analysis/pangenome/superpang/assembly.core_renamed.fna.fai",
         dict = "analysis/pangenome/superpang/assembly.core_renamed.dict",
-        bam = "analysis/pangenome/logan/merge_all_renamed.bam",
-        bai = "analysis/pangenome/logan/merge_all_renamed.bam.bai"
+        bam = "analysis/pangenome/logan/merged_all.bam",
+        bai = "analysis/pangenome/logan/merged_all.bam.bai"
     output:
         "analysis/pangenome/logan/mutect2_all.vcf.gz"
     conda:
@@ -256,8 +270,8 @@ rule call_variants:
         fasta = "analysis/pangenome/superpang/assembly.core_renamed.fna",
         fai = "analysis/pangenome/superpang/assembly.core_renamed.fna.fai",
         dict = "analysis/pangenome/superpang/assembly.core_renamed.dict",
-        bam = "analysis/pangenome/logan/merge_renamed.bam",
-        bai = "analysis/pangenome/logan/merge_renamed.bam.bai"
+        bam = "analysis/pangenome/logan/merged_mg.bam",
+        bai = "analysis/pangenome/logan/merged_mg.bam.bai"
     output:
         "analysis/pangenome/logan/mutect2.vcf.gz"
     conda:
@@ -327,3 +341,43 @@ rule plot_variation:
         "envs/r-plot_variation.yaml"
     script:
         "scripts/plot_variation.R"
+
+rule coverage:
+    input:
+        "analysis/pangenome/logan/minimap2/{sra}_filt.bam"
+    output:
+        "analysis/pangenome/logan/minimap2/{sra}_cov.txt"
+    params:
+        mapq = 0
+    conda:
+        "envs/bedtools.yaml"
+    shell:
+        "samtools view -q {params.mapq} -u {input} | bedtools genomecov -ibam - > {output}"
+
+rule coverage_per_sra:
+    input:
+        expand("analysis/pangenome/logan/minimap2/{sra}_cov.txt", sra = logan_all.index)
+    output:
+        "analysis/pangenome/logan/coverage_per_sra.csv"
+    params:
+        metadata = logan_all
+    conda:
+        "envs/pandas.yaml"
+    script:
+        "scripts/coverage_per_sra.py"
+
+rule plot_map_logan:
+    input:
+        genomes = "metadata/genomes.xlsx",
+        shape = "analysis/maps/ne_110m_land",
+        logan = "analysis/pangenome/logan/coverage_per_sra.csv"
+    output:
+        plot = "output/map_logan.svg",
+        data = "output/map_logan.csv"
+    params:
+        min_coverage = 0.005,
+        taxon = "g__Kariarchaeum"
+    conda:
+        "envs/r-map.yaml"
+    script:
+        "scripts/plot_logan_map.R"

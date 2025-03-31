@@ -1,12 +1,10 @@
 rule dload_map:
     output:
-        "analysis/maps/land/ne_110m_land.shp"
+        directory("analysis/maps/ne_110m_land")
     params:
-        url = "https://www.naturalearthdata.com/http//www.naturalearthdata.com/download/110m/physical/ne_110m_land.zip"
-    shadow:
-        "minimal"
+        url = "https://naciscdn.org/naturalearth/110m/physical/ne_110m_land.zip"
     shell:
-        "wget -O tmp.zip '{params.url}' && unzip tmp.zip -d $(dirname {output})"
+        "mkdir -p {output} && wget -qO- '{params.url}' | bsdtar -xvf- -C {output}"
 
 rule om_rgc_profiles_PF01036:
     input:
@@ -66,8 +64,7 @@ rule jgi_img_profiles:
 
 rule plot_map_clades:
     input:
-        genomes = "metadata/genomes.xlsx",
-        shape = "analysis/maps/land/ne_110m_land.shp",
+        shape = "analysis/maps/ne_110m_land",
         jgi_img_profiles = "analysis/profiles/JGI_IMG_unrestricted_profiles.csv",
         jgi_img_matches = "analysis/profiles/JGI_IMG_unrestricted_matches.csv",
         jgi_img_samples = "analysis/profiles/JGI_IMG_unrestricted_samples.csv",
@@ -90,8 +87,7 @@ rule plot_map_clades:
 
 rule plot_map_pfam:
     input:
-        genomes = "metadata/genomes.xlsx",
-        shape = "analysis/maps/land/ne_110m_land.shp",
+        shape = "analysis/maps/ne_110m_land",
         jgi_img_profiles = [ "analysis/profiles/JGI_IMG_unrestricted_profiles.csv", "analysis/profiles/JGI_IMG_unrestricted_PF01036_profiles.csv" ],
         jgi_img_matches = [ "analysis/profiles/JGI_IMG_unrestricted_matches.csv", "analysis/profiles/JGI_IMG_unrestricted_PF01036_matches.csv" ],
         jgi_img_samples = [ "analysis/profiles/JGI_IMG_unrestricted_samples.csv", "analysis/profiles/JGI_IMG_unrestricted_PF01036_samples.csv" ],
