@@ -251,20 +251,6 @@ rule metagenomic_coverage:
     shell:
         "gatk DepthOfCoverage -R {input.fasta} -I {input.bam} -L {input.bed} -O {output}"
 
-rule call_variants_all:
-    input:
-        fasta = "analysis/pangenome/superpang/assembly.core_renamed.fna",
-        fai = "analysis/pangenome/superpang/assembly.core_renamed.fna.fai",
-        dict = "analysis/pangenome/superpang/assembly.core_renamed.dict",
-        bam = "analysis/pangenome/logan/merged_all.bam",
-        bai = "analysis/pangenome/logan/merged_all.bam.bai"
-    output:
-        "analysis/pangenome/logan/mutect2_all.vcf.gz"
-    conda:
-        "envs/gatk.yaml"
-    shell:
-        "gatk Mutect2 -R {input.fasta} -I {input.bam} -O {output}"
-
 rule call_variants:
     input:
         fasta = "analysis/pangenome/superpang/assembly.core_renamed.fna",
@@ -278,19 +264,6 @@ rule call_variants:
         "envs/gatk.yaml"
     shell:
         "gatk Mutect2 -R {input.fasta} -I {input.bam} -O {output}"
-
-rule filter_variants_all:
-    input:
-        vcf = "analysis/pangenome/logan/mutect2_all.vcf.gz",
-        fasta = "analysis/pangenome/superpang/assembly.core_renamed.fna",
-        fai = "analysis/pangenome/superpang/assembly.core_renamed.fna.fai",
-        dict = "analysis/pangenome/superpang/assembly.core_renamed.dict"
-    output:
-        "analysis/pangenome/logan/mutect2_all_filtered.vcf.gz"
-    conda:
-        "envs/gatk.yaml"
-    shell:
-        "gatk FilterMutectCalls -V {input.vcf} -R {input.fasta} -O {output}"
 
 rule filter_variants:
     input:
@@ -372,8 +345,9 @@ rule plot_map_logan:
         shape = "analysis/maps/ne_110m_land",
         logan = "analysis/pangenome/logan/coverage_per_sra.csv"
     output:
-        plot = "output/map_logan.svg",
-        data = "output/map_logan.csv"
+        map = "output/logan_map.svg",
+        depth = "output/logan_depth.svg",
+        data = "output/logan_data.csv"
     params:
         min_coverage = 0.005,
         taxon = "g__Kariarchaeum"

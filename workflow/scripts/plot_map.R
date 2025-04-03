@@ -1,4 +1,4 @@
-ibrary <- function(...) suppressPackageStartupMessages(base::library(...))
+library <- function(...) suppressPackageStartupMessages(base::library(...))
 
 library(readxl)
 library(dplyr)
@@ -44,8 +44,8 @@ rescue <- "\\b(Freshwater to marine saline gradient|Bioluminescent Bay)\\b"
 jgi_img <- left_join(jgi_img_profiles, jgi_img_samples, by = "Genome.ID") %>%
     left_join(jgi_img_matches, by = "Scaffold.Name") %>%
     mutate(Description = paste(Isolation, Habitat, Ecosystem, Ecosystem.Category, Ecosystem.Subtype, Ecosystem.Type, Specific.Ecosystem)) %>%
-    mutate(Depth.In.Meters = as.numeric(Depth.In.Meters)) %>%
-    filter(Ecosystem.Category == "Aquatic", Depth.In.Meters <= max_depth | is.na(Depth.In.Meters), grepl(rescue, Description, i = T) | !grepl(exclude, Description, i = T)) %>%
+    mutate(Depth.Num = as.numeric(Depth.In.Meters)) %>%
+    filter(Ecosystem.Category == "Aquatic", Depth.Num <= max_depth | is.na(Depth.Num), grepl(rescue, Description, i = T) | !grepl(exclude, Description, i = T)) %>%
     mutate(Sample = as.character(Genome.ID))
 write.csv(jgi_img, row.names = F, file = jgi_img_file)
 
@@ -59,7 +59,7 @@ om_rgc_samples <- bind_rows(lapply(om_rgc_samples_files, read.csv)) %>%
 om_rgc <- left_join(om_rgc_profiles, om_rgc_samples, by = "sample") %>%
     left_join(om_rgc_matches, by = c(OMRGC_ID = "om_rgc")) %>%
     filter(Layer %in% layers) %>%
-    mutate(Sample = sample)
+    mutate(Sample = sample, Depth.In.Meters = Depth..nominal)
 write.csv(om_rgc, row.names = F, file = om_rgc_file)
 
 pct_value <- function(value, clade, target_clade, total_clade) {
@@ -68,7 +68,7 @@ pct_value <- function(value, clade, target_clade, total_clade) {
 }
 
 all_profiles <- bind_rows(list(om_rgc = om_rgc, jgi_img = jgi_img), .id = "Source") %>%
-    group_by(Source, Sequencing.Strategy, Latitude, Longitude, Layer, clade) %>%
+    group_by(Sample, Source, Sequencing.Strategy, Latitude, Longitude, Layer, Depth.In.Meters, clade) %>%
     summarize(value = sum(value), .groups = "drop_last") %>%
     summarize(target_pct = pct_value(value, clade, target_clade, total_clade), .groups = "drop") # ratio is the abundance of the target_clade relative to all the other clades
 write.csv(all_profiles, row.names = F, file = all_profiles_file)
@@ -110,15 +110,16 @@ my_ggplot_world <- function(shape_dir) {
         scale_y_continuous(breaks = seq(-90, 90, 30))
 }
 
-width <- 16
-height <- 8
+width <- 12
+height <- 9
 
 g <- my_ggplot_world(shape_dir)
 
 profile_data <- rename(all_profiles, x = Longitude, y = Latitude) %>%
     filter(!is.na(x), !is.na(y)) # , x >= xlim[1], x <= xlim[2], y >= ylim[1], y <= ylim[2])
 profile_data_non_zero <- filter(profile_data, target_pct > 0) %>%
-    get_repel_coords(g, width, height, label = "o", size = 0.5, force_pull = 20)
+    get_repel_coords(g, width, height, label = "o", size = 0.5, force_pull = 20) %>%
+    arrange(Sequencing.Strategy)
 profile_data_zero <- group_by(profile_data, Source, Sequencing.Strategy, x, y) %>%
     filter(all(target_pct == 0)) %>%
     summarize(.groups = "drop") %>%
@@ -140,19 +141,23 @@ shapes_zero <- c(
     om_rgc = 3,
     jgi_img = 4
 )
+
+size_lim_1 <- min(profile_data_non_zero$target_pct)
+size_lim_2 <- max(profile_data_non_zero$target_pct, size_breaks)
+
 p <- g +
 
-    geom_point(aes(x = x.repel, y = y.repel, color = Sequencing.Strategy, shape = Source), size = 1.5, stroke = 0.5, data = profile_data_zero) +
+    geom_point(aes(x = x, y = y, color = Sequencing.Strategy, shape = Source), size = 1.5, stroke = 0.3, data = profile_data_zero) +
     scale_shape_manual(values = shapes_zero) +
     scale_color_manual(values = colors) +
     new_scale("shape") +
 
-    geom_point(aes(x = x.repel, y = y.repel, color = Sequencing.Strategy, fill = Sequencing.Strategy, size = target_pct, shape = Source), stroke = 1, data = profile_data_non_zero) +
+    geom_point(aes(x = x, y = y, color = Sequencing.Strategy, fill = Sequencing.Strategy, size = target_pct, shape = Source), stroke = 0.7, data = profile_data_non_zero) +
     scale_shape_manual(values = shapes_non_zero) +
     scale_color_manual(values = colors) +
     scale_fill_manual(values = colors_fill, na.value = NA) +
-    scale_size_continuous(range = c(2.5, 14), breaks = rep(size_breaks, each = 2), guide = guide_legend(ncol = 2, override.aes = list(shape = shapes_non_zero))) +
+    scale_size(range = c(2.5, 14), breaks = rep(size_breaks, each = 2), limits = c(size_lim_1, size_lim_2), guide = guide_legend(ncol = 2, override.aes = list(shape = shapes_non_zero))) +
 
     theme_bw() +
-    theme(axis.title.x = element_blank(), axis.title.y = element_blank())
+    theme(axis.title.x = element_blank(), axis.title.y = element_blank(), legend.position = "bottom")
 ggsave(plot_file, p, width = width, height = height)

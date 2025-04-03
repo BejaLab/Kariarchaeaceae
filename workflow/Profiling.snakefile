@@ -103,7 +103,7 @@ rule plot_map_pfam:
         clade = "HeimdallR",
         total_clade = "Bac_rhodopsin",
         max_depth = 200,
-        size_breaks = [ 0.05, 0.1, 0.2, 0.4 ]
+        size_breaks = [ 0.01, 0.1, 1, 10 ]
     conda:
         "envs/r-map.yaml"
     script:

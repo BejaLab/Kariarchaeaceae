@@ -87,17 +87,19 @@ cds_data_dep <- interval_join(cds, coverage) %>%
 cds_data <- bind_rows(cds_data_bed, cds_data_dep) %>%
     left_join(scaffolds, by = "seqname") %>%
     mutate(is_target = gene_num %in% target) %>%
-    mutate(pos = (start + end) / 2)
-cds_quants <- group_by(cds_data, measure) %>%
-    summarize(value = quantile(value, c(0.05, 0.25, 0.5, 0.75, 0.95)), quantile = names(value))
+    mutate(pos = (start + end) / 2) %>%
+    group_by(measure) %>%
+    mutate(is_outlier = value > quantile(value, 0.75) + 1.5 * IQR(value))
+cds_quants <- summarize(cds_data, value = quantile(value, c(0.25, 0.5, 0.75)), quantile = names(value), .groups = "drop")
 
 genome_int <- 100000
 scale_fun <- function(x) sprintf("%d", x)
 
-cds_data_filtered <- filter(cds_data, scaf_len >= min_scaf_len, is.na(depth_too_high) | !depth_too_high)
+cds_data_filtered <- filter(cds_data, scaf_len >= min_scaf_len)
 p <- ggplot(cds_data_filtered, aes(x = pos, y = value)) +
     geom_line(linewidth = 0.1) +
     geom_point(aes(color = strand, size = is_target, shape = is_target)) +
+    geom_point(aes(x = pos, y = value + 0.01), shape = 8, size = 2, data = filter(cds_data_filtered, is_outlier)) +
     geom_hline(aes(yintercept = value, linetype = quantile), color = "#008000ff", data = cds_quants) +
     scale_linetype_manual(values = quantile_lines) +
     scale_color_manual(values = strand_colors) +
@@ -107,8 +109,9 @@ p <- ggplot(cds_data_filtered, aes(x = pos, y = value)) +
     theme_bw() +
     theme(axis.title.y = element_blank(), strip.placement = "outside", strip.background = element_blank())
 ggsave(genome_file, height = 7, width = 15)
-pivot_wider(cds_data, id_cols = c("seqname", "start", "end", "strand", "gene_num", "product"), names_from = "measure", values_from = c("total", "value")) %>%
-    write.csv(file = genome_csv_file)
+pivot_wider(cds_data,
+    id_cols = c("seqname", "start", "end", "strand", "gene_num", "product"), names_from = "measure", values_from = c("total", "value", "is_outlier")
+) %>% write.csv(file = genome_csv_file)
 
 target_cds <- filter(cds, gene_num == target)
 
@@ -129,7 +132,7 @@ win_data <- bind_rows(win_data_bed) %>%
     left_join(scaffolds, by = "seqname") %>%
     mutate(pos = (start + end) / 2)
 win_quants <- group_by(win_data, measure) %>%
-    summarize(value = quantile(value, c(0.05, 0.25, 0.5, 0.75, 0.95)), quantile = names(value))
+    summarize(value = quantile(value, c(0.05, 0.25, 0.5, 0.75, 0.95)), quantile = names(value), .groups = "drop")
 scaf_cds <- filter(cds, seqname == target_cds$seqname) %>%
     mutate(pos = (start + end)/2)
 scaffold_win_data <- filter(win_data, seqname == target_cds$seqname)
@@ -149,5 +152,5 @@ p <- ggplot(scaffold_win_data, aes(x = pos, y = value)) +
     theme_bw()
 ggsave(scaffold_file, height = 4, width = 15)
 
-pivot_wider(scaffold_win_data, id_cols = c("seqname", "pos"), names_from = "measure", values_from = "value") %>%
+pivot_wider(scaffold_win_data, id_cols = c("seqname", "pos", "start", "end"), names_from = "measure", values_from = "value") %>%
     write.csv(file = scaffold_csv_file)

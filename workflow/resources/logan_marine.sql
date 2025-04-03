@@ -1,5 +1,5 @@
 SELECT
-    accession, lat_parsed, lon_parsed,
+    accession, lat_parsed, lon_parsed, depth_parsed, depth2_parsed,
     library_strategy IN ('RNA-Seq') OR library_source IN ('METATRANSCRIPTOMIC','TRANSCRIPTOMIC') OR library_selection IN ('cDNA','RT-PCR','Oligo-dT') AS is_transcriptome
 FROM metadata WHERE passed AND lat_parsed IS NOT NULL AND lon_parsed IS NOT NULL AND
 (
