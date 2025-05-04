@@ -86,7 +86,6 @@ rule splitstree_run:
 rule plot_rhodopsins:
     input:
         residues = "analysis/rhodopsins/residues.txt",
-        # tree = "analysis/rhodopsins/RAxML_bipartitions.txt",
         network = "analysis/rhodopsins/splitstree.nex",
         metadata = "metadata/rhodopsins.xlsx"
     output:

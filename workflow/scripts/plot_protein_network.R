@@ -12,7 +12,6 @@ library(tanggle)
 library(stringr)
 
 with(snakemake@input, {
-    # tree_file <<- newick # analysis/rhodopsins/RAxML_bipartitions.txt
     network_file <<- network # analysis/rhodopsins/splitstree.nex
     metadata_file <<- metadata # metadata/rhodopsins.xlsx
     residues_file <<- residues # analysis/rhodopsins/residues.txt
@@ -31,20 +30,8 @@ residues <- read.table(residues_file, header = T)
 node_data <- read_excel(metadata_file) %>%
     left_join(residues, by = "label") %>%
     mutate(activity = recode(activity, !!!synonyms)) %>%
-    mutate(node = 1 + match(label, network$tip.label)) %>% # I do not quite understand why we need to add 1 here
     mutate(fen1 = str_sub(fenestration, 1, 1), fen2 = str_sub(fenestration, 2, 2)) %>%
-    mutate(alias = ifelse(is.na(alias), label, alias)) %>%
-    rename(lab = label)
-
-aliases <- with(node_data, setNames(alias, lab))
-network$translate$label <- aliases[network$tip.label]  
-
-# Support values from the tree are not yet used
-#tree <- read.tree(tree_file)
-#supports <- with(tree, c(rep(NA, length(tip.label)), node.label))
-#edge_data <- data.frame(parent = network$edge[,1], node = network$edge[,2], tree.node = createLabel(network, tree, tree$edge[,2], "edge")) %>%
-#    mutate(support = as.numeric(supports[tree.node])) %>%
-#    mutate(support = ifelse(support < min_support, NA, support))
+    mutate(alias = ifelse(is.na(alias), label, alias))
 
 x_ext <- Vectorize(function(x0, y0, x1, y1, d) {
     dx <- x1 - x0
@@ -57,12 +44,8 @@ y_ext <- Vectorize(function(x0, y0, x1, y1, d) {
     return(y1 + dy * d / sqrt(dx^2 + dy^2))
 }, vectorize.args = c("x0", "y0", "x1", "y1"))
 
-add_edge_data <- function(p, more_data) {
-    p$data <- left_join(p$data, more_data, by = c("node", "parent"))
-    return(p)
-}
 add_node_data <- function(p, more_data) {
-    p$data <- left_join(p$data, more_data, by = "node")
+    p$data <- left_join(p$data, more_data, by = "label")
     return(p)
 }
 
@@ -104,14 +87,11 @@ motif_colors <- list(
     NTQ = "#f8766dff"
 )
 
-p <- ggsplitnet(network, size = 0.1) %>%
-    # add_edge_data(edge_data) %>%
-    add_node_data(node_data) +
+p <- ggsplitnet(network, size = 0.1) %>% add_node_data(node_data) +
     geom_point2(aes(subset = !is.na(activity), x = x, y = y, color = activity)) +
     scale_color_manual(values = activity_colors) +
     new_scale_color() +
     geom_tiplab2(aes(label = motif, color = motif, x = x_ext(xend, yend, x, y, 0.01), y = y_ext(xend, yend, x, y, 0.01)), size = 2) +
-    # scale_color_manual(values = "red", labels = "DTE") +
     new_scale_color() +
     geom_tiplab2(aes(label = fen1,  color = fen1,  x = x_ext(xend, yend, x, y, 0.055), y = y_ext(xend, yend, x, y, 0.055)), size = 2.5) +
     scale_color_manual(values = fen_colors) +
