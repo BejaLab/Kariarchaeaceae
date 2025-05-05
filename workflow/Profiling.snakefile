@@ -1,3 +1,4 @@
+# Download base world map
 rule dload_map:
     output:
         directory("analysis/maps/ne_110m_land")
@@ -6,6 +7,7 @@ rule dload_map:
     shell:
         "mkdir -p {output} && wget -qO- '{params.url}' | bsdtar -xvf- -C {output}"
 
+# Generate abundance profiles for OM-RGC v2 data (all PF01036 rhodopsins)
 rule om_rgc_profiles_PF01036:
     input:
         clades = "analysis/hmmsearch/OM-RGC_v2_orfs.faa-PF01036.csv",
@@ -21,6 +23,7 @@ rule om_rgc_profiles_PF01036:
     script:
         "scripts/om_rgc_profiles.py"
 
+# Generate abundance profiles for JGI/IMG rhodopsin data (all PF01036 rhodopsins)
 rule jgi_img_profiles_PF01036:
     input:
         clades = "analysis/hmmsearch/JGI_IMG_unrestricted.faa-PF01036.csv",
@@ -34,6 +37,7 @@ rule jgi_img_profiles_PF01036:
     script:
         "scripts/jgi_img_profiles.py"
 
+# Generate abundance profiles for OM-RGC v2 data (archaeal rhodopsins)
 rule om_rgc_profiles:
     input:
         clades = "analysis/blastp/OM-RGC_v2_orfs.faa_clades.csv",
@@ -49,6 +53,7 @@ rule om_rgc_profiles:
     script:
         "scripts/om_rgc_profiles.py"
 
+# Generate abundance profiles for JGI/IMG rhodopsin data (archaeal rhodopsins)
 rule jgi_img_profiles:
     input:
         clades = "analysis/blastp/JGI_IMG_unrestricted.faa_clades.csv",
@@ -62,6 +67,7 @@ rule jgi_img_profiles:
     script:
         "scripts/jgi_img_profiles.py"
 
+# Plot distribution of HeimdallRs (with reference to archaeal rhodopsin pumps)
 rule plot_map_clades:
     input:
         shape = "analysis/maps/ne_110m_land",
@@ -85,6 +91,7 @@ rule plot_map_clades:
     script:
         "scripts/plot_map.R"
 
+# Plot distribution of rhodopsins (with reference to PF01036 rhodopsins)
 rule plot_map_pfam:
     input:
         shape = "analysis/maps/ne_110m_land",
@@ -109,6 +116,7 @@ rule plot_map_pfam:
     script:
         "scripts/plot_map.R"
 
+# Download Pfam hmm profile
 rule pfam_dload:
     output:
         "analysis/pfam/{profile}.hmm"
@@ -117,6 +125,7 @@ rule pfam_dload:
     shell:
         "wget -O- {params.url} | gzip -cd > {output}"
 
+# Do hmmsearch with Pfam profile
 rule pfam_hmmsearch:
     input:
         hmm = "analysis/pfam/{profile}.hmm",
@@ -132,6 +141,7 @@ rule pfam_hmmsearch:
     shell:
         "blastdbcmd -db {params.db} -entry all | hmmsearch --cut_ga -o {output} --cpu {threads} {input.hmm} -"
 
+# Convert hmmsearch output to csv
 rule pfam_csv:
     input:
         "analysis/hmmsearch/{database}-{profile}.txt"

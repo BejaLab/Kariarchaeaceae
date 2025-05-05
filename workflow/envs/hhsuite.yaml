@@ -1,5 +1,0 @@
-channels:
- - conda-forge
- - bioconda
-dependencies:
- - hhsuite=3.3.0

@@ -1,7 +1,0 @@
-channels:
- - conda-forge
- - bioconda
-dependencies:
- - pfam_scan=1.6
- - hmmer=3.4
- - jq=1.7.1

@@ -1,4 +1,4 @@
-
+# Extract scaffolds from a genome that belong to the pangenome core
 rule superpang_scaffolds:
     input:
         txt = "analysis/pangenome/superpang/core_origin.txt",
@@ -11,6 +11,7 @@ rule superpang_scaffolds:
     shell:
         "grep ^{wildcards.genome} {input.txt} | cut -f2 | xargs seqkit faidx {input.fna} > {output}"
 
+# Predict genes in pangenome-filtered genomes with prodigal
 rule prodigal_pangenome_scaffolds:
     input:
         "analysis/pangenome/genomes/{genome}.fna"
@@ -25,6 +26,7 @@ rule prodigal_pangenome_scaffolds:
     shell:
         "prodigal -i {input} -a {output.faa} -d {output.cds} -f gff -o {output.gff} -p single"
 
+# Run superpang for genomes belonging to the target species
 rule superpang:
     input:
         fasta = expand("genomes/{genome}.fna", genome = species_genomes),
@@ -46,6 +48,7 @@ rule superpang:
     shell:
         "SuperPang.py -f {input.fasta} -q {input.checkm} -o $(dirname {output[0]}) -t {threads} -k {params.k} -i {params.ident} -b {params.ident} --gap-size {params.gap} --force-overwrite &> {log}"
 
+# Get list of scaffolds belonging to the pangenome core
 rule superpang_core_origin:
     input:
         info = "analysis/pangenome/superpang/assembly.info.tsv",
@@ -57,6 +60,7 @@ rule superpang_core_origin:
     script:
         "scripts/core_origin.py"
 
+# Linear representation (fasta) of the core pangenome
 rule superpang_core_fasta:
     input:
         info = "analysis/pangenome/superpang/assembly.info.tsv",
@@ -68,6 +72,7 @@ rule superpang_core_fasta:
     shell:
         "csvgrep -t -c regions -m core {input.info} | csvcut -c id | sed 1d | seqkit grep -f- {input.fasta} -o {output}"
 
+# Make superpang core pangenome blast database
 rule superpang_makeblastdb:
     input:
         "analysis/pangenome/superpang/assembly.core.fna"
@@ -78,6 +83,7 @@ rule superpang_makeblastdb:
     shell:
         "makeblastdb -in {input} -dbtype nucl"
 
+# Copy core pangenome to Pgap's folder
 rule copy_assembly_core:
     input:
         "analysis/pangenome/superpang/assembly.core.fna"
@@ -86,6 +92,7 @@ rule copy_assembly_core:
     shell:
         "cp {input} {output}"
 
+# Copy pgap.yaml to the Pgap's folder
 rule copy_submol:
     input:
         "metadata/pgap.yaml"
@@ -94,6 +101,7 @@ rule copy_submol:
     shell:
         "cp {input} {output}"
 
+# Make submol.yaml for the Pgap annotation of the pangenome
 rule make_yaml:
     input:
         fasta  = "analysis/pangenome/pgap/{genome}.fna",
@@ -110,6 +118,7 @@ rule make_yaml:
         with open(output[0], 'w') as fd:
             yaml.dump(sets, fd)
 
+# Run Pgap
 rule pgap:
     input:
         yaml = "analysis/pangenome/pgap/{genome}.yaml",
@@ -127,6 +136,17 @@ rule pgap:
         pgap.py --no-internet --no-self-update --debug --ignore-all-errors --report-usage-true --cpu {threads} -o {params.dirname} {input.yaml}
         """
 
+# Copy the annotated linear representation of the pangenome
+# to output
+rule copy_annot_gbk:
+    input:
+        "analysis/pangenome/pgap/superpang/annot.gbk"
+    output:
+        "output/superpang.gbk"
+    shell:
+        "cp {input} {output}"
+
+# Run checkm on the pangenome
 rule checkm_pangenome:
     input:
         data = "analysis/checkm_database",
@@ -142,19 +162,7 @@ rule checkm_pangenome:
     shell:
         "CHECKM_DATA_PATH={input.data} checkm taxonomy_wf domain {params.domain} $(dirname {input.fasta}) {output} -t {threads}"
 
-rule non_singleton:
-    input:
-        fasta = "analysis/pangenome/superpang/assembly.fasta",
-        tsv = "analysis/pangenome/superpang/assembly.info.tsv"
-    output:
-        "analysis/pangenome/superpang/assembly.non-singleton.fna"
-    conda:
-        "envs/kits.yaml"
-    params:
-        regex = 'core|aux'
-    shell:
-        "grep -E '{params.regex}' {input.tsv} | cut -f1 | seqkit grep -f- {input.fasta} > {output}"
-
+# Minimap2 index of the core pangenome fasta
 rule minimap2_index:
     input:
         "analysis/pangenome/superpang/assembly.core.fna"
@@ -165,6 +173,7 @@ rule minimap2_index:
     shell:
         "minimap2 -d {output} {input}"
 
+# Map logan assemblies (contigs) to the core pangenome
 rule map_logan:
     input:
         index = "analysis/pangenome/superpang/assembly.core.fna.mmi",
@@ -180,34 +189,20 @@ rule map_logan:
     shell:
         "zstd -fcd {input.contigs} | minimap2 {input.index} - --sam-hit-only -a -t {threads} | samtools addreplacerg -r ID:{wildcards.sra} - | samtools sort -o {output}"
 
+# Filter the minimap2 bam files based on sequence divergence (de tag)
 rule filter_bam:
     input:
         "analysis/pangenome/logan/minimap2/{sra}.bam"
     output:
         "analysis/pangenome/logan/minimap2/{sra}_filt.bam"
     params:
-        max_id = 0.2
+        max_de = 0.2
     conda:
         "envs/bedtools.yaml"
     shell:
-        "samtools view -b -e '[de]<{params.max_id}' {input} > {output}"
+        "samtools view -b -e '[de]<{params.max_de}' {input} > {output}"
 
-rule merge_bam_logan_all:
-    input:
-        expand("analysis/pangenome/logan/minimap2/{sra}_filt.bam", sra = logan_all.index)
-    output:
-        "analysis/pangenome/logan/merged_all.bam"
-    params:
-        quals = 'j',
-        sort = True,
-        trim = '_length=\\d+',
-        platform = 'ILLUMINA',
-        sample = 'LOGAN'
-    conda:
-        "envs/pysam.yaml"
-    script:
-        "scripts/merge_bam.py"
-
+# Combine all filtered logan bam files
 rule merge_bam_logan:
     input:
         expand("analysis/pangenome/logan/minimap2/{sra}_filt.bam", sra = logan_mg.index)
@@ -224,6 +219,7 @@ rule merge_bam_logan:
     script:
         "scripts/merge_bam.py"
 
+# Rename sequence names in superpang fasta (gatk is sensitive to "=")
 rule rename_fasta:
     input:
         "analysis/pangenome/superpang/assembly.core.fna"
@@ -236,6 +232,7 @@ rule rename_fasta:
     shell:
         "seqkit replace -p '{params.trim}' -o {output} {input}"
 
+# Metagenomic coverage for the pangenome core based on Logan contigs
 rule metagenomic_coverage:
     input:
         fasta = "analysis/pangenome/superpang/assembly.core_renamed.fna",
@@ -243,14 +240,15 @@ rule metagenomic_coverage:
         dict = "analysis/pangenome/superpang/assembly.core_renamed.dict",
         bam = "analysis/pangenome/logan/merged_mg.bam",
         bai = "analysis/pangenome/logan/merged_mg.bam.bai",
-        bed = "analysis/pangenome/superpang/assembly.core_renamed.fna.fai.bed"
+        ints = "analysis/pangenome/superpang/assembly.core_renamed.fna.fai.txt"
     output:
         "analysis/pangenome/logan/depth_of_coverage.csv"
     conda:
         "envs/gatk.yaml"
     shell:
-        "gatk DepthOfCoverage -R {input.fasta} -I {input.bam} -L {input.bed} -O {output}"
+        "gatk DepthOfCoverage -R {input.fasta} -I {input.bam} -L {input.ints} -O {output}"
 
+# Call variants from the bam files
 rule call_variants:
     input:
         fasta = "analysis/pangenome/superpang/assembly.core_renamed.fna",
@@ -265,6 +263,7 @@ rule call_variants:
     shell:
         "gatk Mutect2 -R {input.fasta} -I {input.bam} -O {output}"
 
+# Filter the variants
 rule filter_variants:
     input:
         vcf = "analysis/pangenome/logan/mutect2.vcf.gz",
@@ -280,6 +279,7 @@ rule filter_variants:
     shell:
         "gatk FilterMutectCalls -V {input.vcf} -R {input.fasta} -O {output} --min-allele-fraction {params.min_fract}"
 
+# Convert the variants to bed
 rule vfc_to_bed:
     input:
         "analysis/pangenome/logan/mutect2_filtered.vcf.gz"
@@ -293,6 +293,7 @@ rule vfc_to_bed:
     shell:
         "gzip -cd {input} | awk 'length($4)<={params.max_var_width}&&$7!~/{params.filter_out}/' | bedtools merge > {output}"
 
+# Plot the variation across the pangenome core (based on the recruited Logan contigs)
 rule plot_variation:
     input:
         bed = "analysis/pangenome/logan/mutect2_filtered.bed",
@@ -306,7 +307,7 @@ rule plot_variation:
     params:
         min_scaf_len = 20000,
         min_cds_len = 100 * 3,
-        target = "000140",
+        target = "000140", # NB: specified manually
         win_size = 200,
         discard_dep_percentile = 0.99,
         filter_out = 'map_qual|base_qual|contamination|weak_evidence|low_allele_frac|normal_artifact|panel_of_normals'
@@ -315,6 +316,7 @@ rule plot_variation:
     script:
         "scripts/plot_variation.R"
 
+# Calculate pangenome core coverage per Logan dataset
 rule coverage:
     input:
         "analysis/pangenome/logan/minimap2/{sra}_filt.bam"
@@ -327,6 +329,7 @@ rule coverage:
     shell:
         "samtools view -q {params.mapq} -u {input} | bedtools genomecov -ibam - > {output}"
 
+# Agglomerate pangenome coverage for Logan datasets
 rule coverage_per_sra:
     input:
         expand("analysis/pangenome/logan/minimap2/{sra}_cov.txt", sra = logan_all.index)
@@ -339,6 +342,7 @@ rule coverage_per_sra:
     script:
         "scripts/coverage_per_sra.py"
 
+# Plot the pangenome coverage on a map
 rule plot_map_logan:
     input:
         genomes = "metadata/genomes.xlsx",

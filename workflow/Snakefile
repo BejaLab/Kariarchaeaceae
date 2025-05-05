@@ -5,16 +5,20 @@ import yaml
 import warnings
 from math import ceil
 
+# Rhodopsin sets (references and archaeal rhodopsins)
 rhodopsin_sets ,= glob_wildcards("rhodopsins/{rhodopsin_set}.faa")
 
+# Read metadata - genomes and rhodopsins
 with warnings.catch_warnings():
     warnings.simplefilter("ignore")
     metadata = read_excel("metadata/genomes.xlsx")
     rhodopsins = read_excel("metadata/rhodopsins.xlsx")
 
+# Set the species name
 species = "Kariarchaeum pelagium"
 genus = species.split()[0]
 
+# Different slices of metadata
 nonred_all = metadata[metadata['redundant'].isna()]
 nonred_bins = nonred_all[nonred_all['is_not_bin'].isna()]
 
@@ -23,10 +27,14 @@ species_genomes = nonred_bins[nonred_bins['classification'].str.contains(species
 other_genomes = nonred_bins[~nonred_bins['classification'].str.contains(species)]['genome'].tolist()
 scaffold_to_pplace = nonred_all[~nonred_all['is_not_bin'].isna()].iloc[0]['genome']
 
-logan_cnn = sqlite3.connect('databases/logan/metadata.sq3')
-with open('workflow/resources/logan_marine.sql') as file:
-    logan_query = file.read()
-logan_all = read_sql_query(logan_query, logan_cnn).set_index('accession')
+# Read logan metadata and select datasets we are interested in
+logan_file = 'metadata/logan_marine_datasets.csv'
+if not path.exists(logan_file):
+    logan_cnn = sqlite3.connect('databases/logan/metadata.sq3')
+    with open('workflow/resources/logan_marine.sql') as file:
+        logan_query = file.read()
+    read_sql_query(logan_query, logan_cnn).set_index('accession').to_csv(logan_file)
+logan_all = read_csv(logan_file)
 logan_mg = logan_all.query("is_transcriptome == 0")
 
 configfile: "metadata/config.yaml"
@@ -35,12 +43,28 @@ include: "Species_phylogeny.snakefile"
 include: "Proteins.snakefile"
 include: "Profiling.snakefile"
 
+# All of the final output files we need
 rule all:
     input:
-        "output/species.svg",
+        "output/genome.svg",
+        "output/scaffold.csv",
+        "output/genome.csv",
+        "output/logan_map.svg",
+        "output/logan_depth.svg",
+        "output/logan_data.csv",
         "output/map.svg",
-        "output/map_pfam.svg"
+        "output/map_all_profiles.csv",
+        "output/map_om_rgc.csv",
+        "output/map_jgi_img.csv",
+        "output/map_pfam.svg",
+        "output/map_all_profiles_pfam.csv",
+        "output/map_om_rgc_pfam.csv",
+        "output/map_jgi_img_pfam.csv",
+        "output/rhodopsin_network.svg",
+        "output/species.svg",
+        "output/superpang.gbk"
 
+# Copy genome for analysis
 rule copy_genome:
     input:
         "genomes/{genome}.fna"
@@ -49,6 +73,7 @@ rule copy_genome:
     shell:
         "cp {input} {output}"
 
+# Create fasta .fai index
 rule faidx:
     input:
         "{prefix}"
@@ -59,6 +84,7 @@ rule faidx:
     shell:
         "seqkit faidx {input}"
 
+# Make protein blast database from fasta
 rule makeblast_prot:
     input:
         "{prefix}.faa"
@@ -69,6 +95,7 @@ rule makeblast_prot:
     shell:
         "makeblastdb -in {input} -dbtype prot"
 
+# Make nucleotide blast database from fasta
 rule makeblast_nucl:
     input:
         "{prefix}.fna"
@@ -79,6 +106,7 @@ rule makeblast_nucl:
     shell:
         "makeblastdb -in {input} -dbtype nucl"
 
+# Concatenate all genomes
 rule cat_genomes:
     input:
         expand("analysis/genomes/{genome}.faa", genome = all_genomes)
@@ -87,6 +115,7 @@ rule cat_genomes:
     shell:
         "cat {input} > {output}"
 
+# Create fasta .dict index
 rule fasta_dict:
     input:
         "{prefix}.fna"
@@ -97,6 +126,7 @@ rule fasta_dict:
     shell:
         "gatk CreateSequenceDictionary -R {input} -O {output}"
 
+# Create bam .bai index
 rule bam_index:
     input:
         "{prefix}.bam"
@@ -107,10 +137,11 @@ rule bam_index:
     shell:
         "samtools index {input}"
 
-rule fai_bed:
+# Convert fai index to intervals (list of sequences with their sizes)
+rule fai_to_intervals:
     input:
         "{prefix}.fai"
     output:
-        "{prefix}.fai.bed"
+        "{prefix}.fai.txt"
     shell:
         "awk '{{print$1,1,$2}}' OFS=\\\\t {input} > {output}"
