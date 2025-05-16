@@ -78,10 +78,10 @@ rule plot_map_clades:
         om_rgc_matches = "analysis/profiles/OM-RGC_v2_orfs_matches.csv",
         om_rgc_samples = "analysis/profiles/OM-RGC_v2_orfs_samples.csv"
     output:
-        plot = "output/map.svg",
-        all_profiles = "output/map_all_profiles.csv",
-        om_rgc = "output/map_om_rgc.csv",
-        jgi_img = "output/map_jgi_img.csv"
+        plot = "output/Distribution_of_HeidallRs_relative_to_archaeal_proton_pumps.svg",
+        all_profiles = "output/Distribution_of_HeidallRs_relative_to_archaeal_proton_pumps_combined.csv",
+        om_rgc = "output/Distribution_of_HeidallRs_relative_to_archaeal_proton_pumps_OM-RGC2.csv",
+        jgi_img = "output/Distribution_of_HeidallRs_relative_to_archaeal_proton_pumps_JGI.IMG.csv"
     params:
         clade = "HeimdallR",
         max_depth = 200,
@@ -102,10 +102,10 @@ rule plot_map_pfam:
         om_rgc_matches = [ "analysis/profiles/OM-RGC_v2_orfs_matches.csv", "analysis/profiles/OM-RGC_v2_orfs_PF01036_matches.csv" ],
         om_rgc_samples = [ "analysis/profiles/OM-RGC_v2_orfs_samples.csv", "analysis/profiles/OM-RGC_v2_orfs_PF01036_samples.csv" ]
     output:
-        plot = "output/map_pfam.svg",
-        all_profiles = "output/map_all_profiles_pfam.csv",
-        om_rgc = "output/map_om_rgc_pfam.csv",
-        jgi_img = "output/map_jgi_img_pfam.csv"
+        plot = "output/Distribution_of_HeidallRs_relative_to_all_rhodopsins.svg",
+        all_profiles = "output/Distribution_of_HeidallRs_relative_to_all_rhodopsins_combined.csv",
+        om_rgc = "output/Distribution_of_HeidallRs_relative_to_all_rhodopsins_OM-RGC2.csv",
+        jgi_img = "output/Distribution_of_HeidallRs_relative_to_all_rhodopsins_JGI.IMG.csv"
     params:
         clade = "HeimdallR",
         total_clade = "Bac_rhodopsin",

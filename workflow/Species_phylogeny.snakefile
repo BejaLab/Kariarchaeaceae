@@ -177,7 +177,7 @@ rule transfer_supports:
         "analysis/proteins_phylophlan/RAxML_bipartitions.proteins.tre",
         "analysis/pplacer/pplacer.newick"
     output:
-        "analysis/pplacer/pplacer_with_supports.newick"
+        "output/Species_phylogeny_pplacer_with_supports.nex"
     conda:
         "envs/dendropy.yaml"
     script:
@@ -187,11 +187,11 @@ rule transfer_supports:
 rule plot_species_tree:
     input:
         jplace = "analysis/pplacer/pplacer.jplace",
-        newick = "analysis/pplacer/pplacer_with_supports.newick",
+        newick = "output/Species_phylogeny_pplacer_with_supports.nex",
         metadata = "metadata/genomes.xlsx",
         genes = "analysis/pplacer/pplacer_input.txt"
     output:
-        "output/species.svg"
+        "output/Species_phylogeny.svg"
     params:
         genomes = species_genomes
     conda:

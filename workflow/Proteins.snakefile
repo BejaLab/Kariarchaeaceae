@@ -53,7 +53,7 @@ rule splitstree_run:
         fasta = "analysis/rhodopsins/trimal.faa",
         nexus = "metadata/splitstree.nex"
     output:
-        "analysis/rhodopsins/splitstree.nex"
+        "output/Rhodopsins_NeighborNet_network.nex"
     shell:
         "xvfb-run -a SplitsTreeCMD -x 'IMPORT FILE={input.fasta} DATATYPE=PROTEIN; EXECUTE FILE={input.nexus}; UPDATE; SAVE FILE={output}; QUIT;'"
 
@@ -61,10 +61,10 @@ rule splitstree_run:
 rule plot_rhodopsins:
     input:
         residues = "analysis/rhodopsins/residues.txt",
-        network = "analysis/rhodopsins/splitstree.nex",
+        network = "output/Rhodopsins_NeighborNet_network.nex",
         metadata = "metadata/rhodopsins.xlsx"
     output:
-        "output/rhodopsin_network.svg"
+        "output/Rhodopsins_NeighborNet_network.svg"
     conda:
         "envs/r.yaml"
     script:

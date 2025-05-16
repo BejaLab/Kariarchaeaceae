@@ -46,23 +46,25 @@ include: "Profiling.snakefile"
 # All of the final output files we need
 rule all:
     input:
-        "output/genome.svg",
-        "output/scaffold.csv",
-        "output/genome.csv",
-        "output/logan_map.svg",
-        "output/logan_depth.svg",
-        "output/logan_data.csv",
-        "output/map.svg",
-        "output/map_all_profiles.csv",
-        "output/map_om_rgc.csv",
-        "output/map_jgi_img.csv",
-        "output/map_pfam.svg",
-        "output/map_all_profiles_pfam.csv",
-        "output/map_om_rgc_pfam.csv",
-        "output/map_jgi_img_pfam.csv",
-        "output/rhodopsin_network.svg",
-        "output/species.svg",
-        "output/superpang.gbk"
+        "output/Variation_across_pangenome.svg",
+        "output/Variation_across_pangenome.csv",
+        "output/Variation_across_scaffold.svg",
+        "output/Variation_across_scaffold.csv",
+        "output/Distribution_of_Kariarchaeum_map.svg",
+        "output/Distribution_of_Kariarchaeum_depths.svg",
+        "output/Distribution_of_Kariarchaeum_data.csv",
+        "output/Distribution_of_HeidallRs_relative_to_archaeal_proton_pumps.svg",
+        "output/Distribution_of_HeidallRs_relative_to_archaeal_proton_pumps_combined.csv",
+        "output/Distribution_of_HeidallRs_relative_to_archaeal_proton_pumps_OM-RGC2.csv",
+        "output/Distribution_of_HeidallRs_relative_to_archaeal_proton_pumps_JGI.IMG.csv",
+        "output/Distribution_of_HeidallRs_relative_to_all_rhodopsins.svg",
+        "output/Distribution_of_HeidallRs_relative_to_all_rhodopsins_combined.csv",
+        "output/Distribution_of_HeidallRs_relative_to_all_rhodopsins_OM-RGC2.csv",
+        "output/Distribution_of_HeidallRs_relative_to_all_rhodopsins_JGI.IMG.csv",
+        "output/Rhodopsins_NeighborNet_network.svg",
+        "output/Species_phylogeny.svg",
+        "output/Superpang_pangenome_annotated.gbk",
+        "output/Rhodopsins_NeighborNet_network.nex"
 
 # Copy genome for analysis
 rule copy_genome:

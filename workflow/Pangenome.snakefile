@@ -138,13 +138,18 @@ rule pgap:
 
 # Copy the annotated linear representation of the pangenome
 # to output
-rule copy_annot_gbk:
+rule fix_gbk:
     input:
         "analysis/pangenome/pgap/superpang/annot.gbk"
     output:
-        "output/superpang.gbk"
-    shell:
-        "cp {input} {output}"
+        "output/Superpang_pangenome_annotated.gbk"
+    params:
+        organism = "Candidatus Kariarchaeum pelagium",
+        locus_prefix = 'KPEL'
+    conda:
+        "envs/biopython.yaml"
+    script:
+        "scripts/fix_gbk.py"
 
 # Run checkm on the pangenome
 rule checkm_pangenome:
@@ -300,10 +305,10 @@ rule plot_variation:
         cov = "analysis/pangenome/logan/depth_of_coverage.csv",
         gff = "analysis/pangenome/pgap/superpang/annot.gff"
     output:
-        scaffold = "output/scaffold.svg",
-        genome = "output/genome.svg",
-        scaffold_csv = "output/scaffold.csv",
-        genome_csv = "output/genome.csv"
+        scaffold = "output/Variation_across_scaffold.svg",
+        genome = "output/Variation_across_pangenome.svg",
+        scaffold_csv = "output/Variation_across_scaffold.csv",
+        genome_csv = "output/Variation_across_pangenome.csv"
     params:
         min_scaf_len = 20000,
         min_cds_len = 100 * 3,
@@ -349,9 +354,9 @@ rule plot_map_logan:
         shape = "analysis/maps/ne_110m_land",
         logan = "analysis/pangenome/logan/coverage_per_sra.csv"
     output:
-        map = "output/logan_map.svg",
-        depth = "output/logan_depth.svg",
-        data = "output/logan_data.csv"
+        map = "output/Distribution_of_Kariarchaeum_map.svg",
+        depth = "output/Distribution_of_Kariarchaeum_depths.svg",
+        data = "output/Distribution_of_Kariarchaeum_data.csv"
     params:
         min_coverage = 0.005,
         taxon = "g__Kariarchaeum"
