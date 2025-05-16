@@ -30,7 +30,7 @@ rule phylophlan_input:
 # template
 rule phylophlan_config:
     input:
-        "metadata/phylophlan.cfg"
+        "workflow/resources/phylophlan.cfg"
     output:
         "analysis/proteins_phylophlan/phylophlan.cfg"
     params:
@@ -48,7 +48,7 @@ rule phylophlan:
     input:
         work_dir = "analysis/proteins",
         cfg = "analysis/proteins_phylophlan/phylophlan.cfg",
-        maas = "metadata/phylophlan.tsv"
+        maas = "workflow/resources/phylophlan.tsv"
     output:
         info = "analysis/proteins_phylophlan/RAxML_info.proteins.tre",
         aln = "analysis/proteins_phylophlan/proteins_concatenated.aln",

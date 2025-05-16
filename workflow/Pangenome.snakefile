@@ -95,7 +95,7 @@ rule copy_assembly_core:
 # Copy pgap.yaml to the Pgap's folder
 rule copy_submol:
     input:
-        "metadata/pgap.yaml"
+        "workflow/resources/pgap.yaml"
     output:
         "analysis/pangenome/pgap/{genome}_submol.yaml"
     shell:

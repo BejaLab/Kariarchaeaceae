@@ -37,7 +37,7 @@ if not path.exists(logan_file):
 logan_all = read_csv(logan_file)
 logan_mg = logan_all.query("is_transcriptome == 0")
 
-configfile: "metadata/config.yaml"
+configfile: "workflow/config.yaml"
 include: "Pangenome.snakefile"
 include: "Species_phylogeny.snakefile"
 include: "Proteins.snakefile"

@@ -51,7 +51,7 @@ rule rhodopsins_trimal:
 rule splitstree_run:
     input:
         fasta = "analysis/rhodopsins/trimal.faa",
-        nexus = "metadata/splitstree.nex"
+        nexus = "workflow/resources/splitstree.nex"
     output:
         "output/Rhodopsins_NeighborNet_network.nex"
     shell:
